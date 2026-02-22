@@ -9,6 +9,7 @@ import folium
 from streamlit_folium import st_folium
 import datetime
 import requests
+
 # --- IMPORTACIÓN SEPARADA PARA EVITAR CAÍDAS ---
 try:
     from ladybug.sunpath import Sunpath
@@ -16,13 +17,6 @@ try:
     LADYBUG_READY = True
 except ImportError:
     LADYBUG_READY = False
-
-try:
-    from honeybee_energy.lib.programtypes import PROGRAM_TYPES, program_type_by_identifier
-    from honeybee_energy.lib.materials import OPAQUE_MATERIALS, opaque_material_by_identifier
-    HONEYBEE_READY = True
-except ImportError:
-    HONEYBEE_READY = False
 
 # ==========================================
 # 1. CONFIGURACIÓN DE LA APP Y BRANDING
@@ -63,7 +57,36 @@ def cargar_catalogo():
 df_domos = cargar_catalogo()
 
 # ==========================================
-# 3. SIDEBAR: INPUTS Y NORMATIVAS
+# 3. MOTOR CLIMÁTICO AVANZADO (NASA POWER)
+# ==========================================
+@st.cache_data
+def obtener_clima_detallado_nasa(lat, lon):
+    """Extrae componentes de luz y nubes de la NASA para cualquier coordenada."""
+    parametros = "ALLSKY_SFC_SW_DWN,DIFF,ALLSKY_SFC_SW_DNI,CLD_OT,T2M"
+    url = (
+        f"https://power.larc.nasa.gov/api/temporal/hourly/point?"
+        f"parameters={parametros}&community=RE&longitude={lon}&latitude={lat}"
+        f"&start=20230101&end=20231231&format=JSON"
+    )
+    try:
+        r = requests.get(url, timeout=15)
+        data = r.json()['properties']['parameter']
+        ghi = np.array(list(data['ALLSKY_SFC_SW_DWN'].values()))
+        difusa = np.array(list(data['DIFF'].values()))
+        nubes = np.array(list(data['CLD_OT'].values()))
+        temp = np.array(list(data['T2M'].values()))
+        # Conversión científica a LUX (Eficacia lumínica global ~115)
+        return {
+            "lux": ghi[:8760] * 115,
+            "difusa": difusa[:8760] * 115,
+            "nubes": nubes[:8760],
+            "temp": temp[:8760]
+        }
+    except:
+        return None
+
+# ==========================================
+# 4. SIDEBAR: INPUTS
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 1. Geometría de la Nave")
@@ -73,301 +96,151 @@ with st.sidebar:
     
     st.header("☀️ 2. Configuración Sunoptics")
     modelo_seleccionado = st.selectbox("Modelo NFRC", df_domos['Modelo'])
-    sfr_target = st.slider("Objetivo SFR (%)", min_value=1.0, max_value=10.0, value=4.0, step=0.1) / 100.0
+    sfr_target = st.slider("Objetivo SFR (%)", 1.0, 10.0, 4.0, 0.1) / 100.0
     datos_domo = df_domos[df_domos['Modelo'] == modelo_seleccionado].iloc[0]
     
-    st.info(f"**VLT:** {datos_domo['VLT']} | **SHGC:** {datos_domo['SHGC']}\n**U-Value:** {datos_domo['U_Value']}")
+    st.info(f"**VLT:** {datos_domo['VLT']} | **SHGC:** {datos_domo['SHGC']}")
 
-    st.header("📚 3. Normativa de Proyecto")
+    st.header("📚 3. Normativa")
     uso_edificio = st.selectbox("Uso (ASHRAE 90.1)", ["Warehouse", "Manufacturing", "Retail"])
-    material_techo = st.selectbox("Material de Cubierta", ["Generic Roof Membrane", "Metal Deck", "Concrete"])
+    material_techo = st.selectbox("Material de Cubierta", ["Membrane", "Metal Deck", "Concrete"])
 
 area_nave = ancho * largo
-# ==========================================
-# MOTOR GEOGRÁFICO Y BÚSQUEDA EPW (ALGORITMO HAVERSINE)
-# ==========================================
-@st.cache_data
-def cargar_catalogo_estaciones():
-    """Descarga el catálogo maestro mundial de estaciones EPW del NREL."""
-    url_master = "https://raw.githubusercontent.com/NREL/EnergyPlus/develop/weather/master.geojson"
-    try:
-        r = requests.get(url_master, timeout=10)
-        return r.json()["features"]
-    except:
-        return []
 
-def buscar_estacion_cercana(lat_obj, lon_obj):
-    """Encuentra la estación más cercana calculando la distancia esférica."""
-    estaciones = cargar_catalogo_estaciones()
-    if not estaciones: return None
-    estacion_cercana = None
-    min_dist = float('inf')
-    for est in estaciones:
-        lon_est, lat_est = est["geometry"]["coordinates"]
-        R = 6371.0 # Radio de la Tierra en km
-        dlat, dlon = math.radians(lat_est - lat_obj), math.radians(lon_est - lon_obj)
-        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat_obj))*math.cos(math.radians(lat_est))*math.sin(dlon/2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-        distancia = R * c
-        if distancia < min_dist:
-            min_dist = distancia
-            estacion_cercana = {"nombre": est["properties"]["title"], "url": est["properties"]["epw"], "dist_km": round(distancia, 1)}
-    return estacion_cercana
-
-# Inicializar memoria de la App
-if 'epw_url_activa' not in st.session_state:
-    st.session_state['epw_url_activa'] = "https://energyplus-weather.s3.amazonaws.com/north_and_central_america_wmo_region_4/MEX/MEX_DF_Mexico.City-Benito.Juarez.Intl.AP.766790_TMY3/MEX_DF_Mexico.City-Benito.Juarez.Intl.AP.766790_TMY3.epw"
-    st.session_state['nombre_estacion'] = "Ciudad de México (Por defecto)"
 # ==========================================
-# 4. MOTORES FÍSICOS Y NORMATIVOS
+# 5. LÓGICA DE CÁLCULO (MOTORES FÍSICOS)
 # ==========================================
 def calcular_cu(w, l, h):
     rcr = (5 * h * (w + l)) / (w * l)
     return 0.85 * (math.exp(-0.12 * rcr))
 
-def generar_horario_ashrae_fallback():
-    """Fallback si falla Honeybee: L-S de 8am a 6pm al 100%"""
+cu_proyecto = calcular_cu(ancho, largo, alto)
+
+def generar_horario_ashrae():
     matriz = np.zeros(8760)
     for dia in range(365):
-        if dia % 7 < 6:
+        if dia % 7 < 6: # Lunes a Sábado
             for hora in range(8, 18): matriz[(dia * 24) + hora] = 1.0
     return matriz
 
-# Variables de Proyecto calculadas
-cu_proyecto = calcular_cu(ancho, largo, alto)
-horario_uso = generar_horario_ashrae_fallback() # Asumimos fallback por velocidad en web
+horario_uso = generar_horario_ashrae()
 horas_laborales = np.sum(horario_uso)
 
-# ==========================================
-# 4.1 MOTOR CLIMÁTICO REAL (LADYBUG EPW)
-# ==========================================
-@st.cache_data
-def obtener_clima_real(url_epw):
-    """Descarga archivo EPW y extrae 8760 valores reales de luz y temperatura."""
-    ruta_epw = "clima_proyecto.epw"
-    try:
-        import requests
-        from ladybug.epw import EPW # Se importa aquí adentro por seguridad
-        
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url_epw, headers=headers, timeout=10)
-        with open(ruta_epw, "wb") as f:
-            f.write(response.content)
-            
-        epw_file = EPW(ruta_epw)
-        lux_real = epw_file.global_horizontal_illuminance.values
-        temp_real = epw_file.dry_bulb_temperature.values
-        return np.array(lux_real), np.array(temp_real), epw_file.location.city
-    
-    except Exception as e:
-        # Si no hay internet o falla la librería, entra el simulador
-        st.warning(f"⚠️ Usando clima de respaldo simulado. Motivo: {e}")
-        lux_falso = np.clip(np.sin(np.linspace(0, np.pi, 24)) * 60000, 0, None)
-        return np.tile(lux_falso, 365) * np.random.uniform(0.3, 1.0, 8760), np.random.normal(24, 6, 8760), "Simulación"
-
-# URL de clima real (Ejemplo: Ciudad de México TMY3)
-url_clima_ejemplo = "https://energyplus-weather.s3.amazonaws.com/north_and_central_america_wmo_region_4/MEX/MEX_DF_Mexico.City-Benito.Juarez.Intl.AP.766790_TMY3/MEX_DF_Mexico.City-Benito.Juarez.Intl.AP.766790_TMY3.epw"
-
-iluminancia_anual, temp_anual, ciudad_clima = obtener_clima_real(url_clima_ejemplo)
+# Inicializar estado del clima para evitar errores al cargar
+if 'clima_data' not in st.session_state:
+    st.session_state['clima_data'] = None
 
 # ==========================================
-# 5. INTERFAZ PRINCIPAL (TABS)
+# 6. INTERFAZ PRINCIPAL (TABS)
 # ==========================================
 tab_geo, tab_3d, tab_analitica = st.tabs(["📍 Contexto Climático", "📐 Distribución Geométrica", "📊 Análisis Energético"])
 
-# --- TAB 1: CONTEXTO GEOGRÁFICO Y SOLAR ---
 with tab_geo:
-    st.subheader("Buscador Interactivo de Estaciones Meteorológicas")
+    st.subheader("Buscador Satelital de Irradiancia y Nubosidad")
     col_mapa, col_datos = st.columns([2, 1])
     
     with col_mapa:
-        # Centramos el mapa inicialmente en una zona neutra o la última posición
-        m = folium.Map(location=[20.588, -100.389], zoom_start=5)
+        m = folium.Map(location=[9.933, -84.083], zoom_start=7) # Centrado en Costa Rica
         m.add_child(folium.LatLngPopup())
         map_data = st_folium(m, height=400, width=700)
     
     with col_datos:
         if map_data and map_data['last_clicked']:
             lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
-            st.success(f"**Punto de Proyecto:** {lat:.3f}, {lon:.3f}")
+            st.success(f"**Coordenadas:** {lat:.3f}, {lon:.3f}")
             
-            info_clima = buscar_estacion_cercana(lat, lon)
+            with st.spinner("Descargando datos de la NASA..."):
+                st.session_state['clima_data'] = obtener_clima_detallado_nasa(lat, lon)
             
-            if info_clima:
-                st.info(f"📡 **Estación detectada:**\n{info_clima['nombre']}\n\n📍 **Distancia:** {info_clima['dist_km']} km")
-                st.session_state['epw_url_activa'] = info_clima['url']
-                st.session_state['nombre_estacion'] = info_clima['nombre']
-            
-            if LADYBUG_READY:
-                loc = Location("Proyecto", latitude=lat, longitude=lon, time_zone=0)
-                sp = Sunpath.from_location(loc)
-                sol = sp.calculate_sun(month=6, day=21, hour=12)
-                st.markdown("### 🌞 Posición Solar (Solsticio)")
-                st.metric("Altitud Solar", f"{round(sol.altitude, 2)}°")
-                st.metric("Azimut", f"{round(sol.azimuth, 2)}°")
+            if st.session_state['clima_data']:
+                st.info("✅ Datos satelitales vinculados al motor de cálculo.")
+                if LADYBUG_READY:
+                    loc = Location("Proyecto", latitude=lat, longitude=lon, time_zone=0)
+                    sp = Sunpath.from_location(loc)
+                    sol = sp.calculate_sun(month=6, day=21, hour=12)
+                    st.metric("Altitud Solar (Zenit)", f"{round(sol.altitude, 2)}°")
         else:
-            st.warning("👈 Haz clic en el mapa para vincular el clima real.")
-# --- TAB 2: GEOMETRÍA Y MATERIALES ---
+            st.warning("👈 Haz clic en el mapa para cargar el clima real.")
+
+    if st.session_state['clima_data']:
+        # Gráfico de Nubosidad
+        df_c = pd.DataFrame({
+            'Mes': pd.date_range("2023-01-01", periods=8760, freq="h").month,
+            'Nubes': st.session_state['clima_data']['nubes']
+        }).groupby('Mes').mean()
+        
+        fig_n = px.bar(df_c, y='Nubes', title="Índice de Nubosidad Mensual (Satelital)", 
+                       labels={'Nubes':'Grosor Óptico (OT)'}, color_discrete_sequence=['#95a5a6'])
+        st.plotly_chart(fig_n, use_container_width=True)
+
 with tab_3d:
-    st.subheader(f"Plano de Ingeniería: Distribución Uniforme (Regla S/2)")
+    st.subheader("Distribución Matricial Sunoptics")
+    col_plot, col_info = st.columns([2, 1])
     
-    col_mat, col_plot = st.columns([1, 2])
-    with col_mat:
-        st.markdown("### Parámetros Constructivos")
-        st.write(f"**Uso ASHRAE:** {uso_edificio}")
-        st.write(f"**Horas de operación:** {horas_laborales:,.0f} hrs/año")
-        st.write(f"**Material Techo:** {material_techo}")
-        st.write(f"**Reflectancia Asumida:** 35%")
-        st.write(f"**Factor CU Calculado:** {cu_proyecto:.3f}")
-        
+    area_un_domo = datos_domo['Ancho_m'] * datos_domo['Largo_m']
+    num_domos_teorico = (area_nave * sfr_target) / area_un_domo
+    cols = max(1, round((num_domos_teorico * (ancho/largo))**0.5))
+    filas = max(1, math.ceil(num_domos_teorico / cols))
+    total_domos = cols * filas
+
     with col_plot:
-        # LÓGICA EXACTA DE DISTRIBUCIÓN MATRICIAL (Del script 3.V3)
-        area_un_domo = datos_domo['Ancho_m'] * datos_domo['Largo_m']
-        num_domos_teorico = (area_nave * sfr_target) / area_un_domo
-        ratio = ancho / largo
-        cols = max(1, round((num_domos_teorico * ratio)**0.5))
-        filas = max(1, math.ceil(num_domos_teorico / cols))
-        total_domos = cols * filas
-        
-        fig, ax = plt.subplots(figsize=(6, 8))
-        ax.add_patch(plt.Rectangle((0, 0), ancho, largo, color='none', ec='#333333', lw=4, label='Muros Perimetrales'))
-        
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.add_patch(plt.Rectangle((0, 0), ancho, largo, color='none', ec='black', lw=2))
         sp_x, sp_y = ancho / cols, largo / filas
-        w_d, l_d = datos_domo['Ancho_m'], datos_domo['Largo_m']
-        
         for i in range(cols):
             for j in range(filas):
-                cx, cy = (i * sp_x) + (sp_x / 2), (j * sp_y) + (sp_y / 2)
-                ax.add_patch(plt.Rectangle((cx - w_d/2, cy - l_d/2), w_d, l_d, color='#00aaff', alpha=0.7, ec='#0055ff', lw=1.5))
-
-        ax.set_title(f"Matriz de {total_domos} Domos Sunoptics instalados\nModelo: {datos_domo['Modelo']}", fontweight='bold')
-        ax.set_aspect('equal')
-        ax.grid(True, linestyle=':', alpha=0.4)
-        plt.xlim(-2, ancho + 2)
-        plt.ylim(-2, largo + 2)
+                cx, cy = (i * sp_x) + (sp_x/2), (j * sp_y) + (sp_y/2)
+                ax.add_patch(plt.Rectangle((cx-datos_domo['Ancho_m']/2, cy-datos_domo['Largo_m']/2), 
+                                           datos_domo['Ancho_m'], datos_domo['Largo_m'], color='#00aaff', alpha=0.6))
+        plt.axis('equal')
         st.pyplot(fig)
+    
+    with col_info:
+        st.metric("Total Domos", f"{total_domos} und")
+        st.write(f"Distanciamiento: {sp_x:.2f}m x {sp_y:.2f}m")
 
-# --- TAB 3: ANALÍTICA AVANZADA ---
 with tab_analitica:
-    st.subheader("Desempeño Lumínico y Térmico (Simulación 8,760 hrs)")
-    
-    # 1. CÁLCULO VECTORIAL LUZ
-    e_in = iluminancia_anual * sfr_target * (0.85 * 0.9 * datos_domo['VLT']) * cu_proyecto
-    potencia_kw = (area_nave * 8.0) / 1000.0 # 8W/m2 ASHRAE
-    
-    consumo_base = potencia_kw * horario_uso
-    luz_faltante = np.clip(300 - e_in, 0, 300)
-    consumo_proyecto = (luz_faltante / 300) * potencia_kw * horario_uso
-    
-    horas_apagadas = np.sum((e_in >= 300) & (horario_uso == 1.0))
-    sda_pct = (horas_apagadas / horas_laborales) * 100 if horas_laborales > 0 else 0
-    
-    # 2. DASHBOARD S_DA Y BARRAS
-    col_kpi1, col_kpi2 = st.columns(2)
-    with col_kpi1:
-        fig_bar = go.Figure(data=[
-            go.Bar(name='Sin Domos', x=['Consumo'], y=[np.sum(consumo_base)], marker_color='#E74C3C', text=[f"{np.sum(consumo_base):,.0f} kWh"], textposition='auto'),
-            go.Bar(name='Con Sunoptics', x=['Consumo'], y=[np.sum(consumo_proyecto)], marker_color='#2ECC71', text=[f"{np.sum(consumo_proyecto):,.0f} kWh"], textposition='auto')
-        ])
-        fig_bar.update_layout(title="Comparativa de Consumo", height=350, barmode='group')
-        st.plotly_chart(fig_bar, use_container_width=True)
-        
-    with col_kpi2:
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number+delta", value=sda_pct,
-            title={'text': "Horas laborales sin luz artificial"}, number={'suffix': "%"},
-            gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#3498DB"},
-                   'steps': [{'range': [0, 50], 'color': "#EAEDED"}, {'range': [50, 75], 'color': "#D5DBDB"}, {'range': [75, 100], 'color': "#A9DFBF"}],
-                   'threshold': {'line': {'color': "black", 'width': 4}, 'thickness': 0.75, 'value': 75}}
-        ))
-        fig_gauge.update_layout(height=350)
-        st.plotly_chart(fig_gauge, use_container_width=True)
+    if st.session_state['clima_data']:
+        lux_anual = st.session_state['clima_data']['lux']
+        temp_anual = st.session_state['clima_data']['temp']
 
-  # 3. CURVA TÉRMICA (HVAC)
-    st.markdown("### Curva de Optimización Energética (Flujo Dividido)")
-    sfr_range = np.linspace(0.01, 0.10, 10)
-    ahorros, hvac_penalties = [], []
-    
-    for s in sfr_range:
-        # Ahorro de luz anual
-        e_temp = iluminancia_anual * s * (0.85 * 0.9 * datos_domo['VLT']) * cu_proyecto
-        c_temp = (np.clip(300 - e_temp, 0, 300) / 300) * potencia_kw * horario_uso
+        # Cálculo de Iluminancia Interna
+        e_in = lux_anual * sfr_target * (0.85 * 0.9 * datos_domo['VLT']) * cu_proyecto
+        potencia_w_m2 = 8.0 # Estándar ASHRAE
+        potencia_total_kw = (area_nave * potencia_w_m2) / 1000.0
         
-        ahorro_luz_total = np.sum(consumo_base) - np.sum(c_temp)
-        ahorros.append(ahorro_luz_total)
+        consumo_base = potencia_total_kw * horario_uso
+        luz_faltante = np.clip(300 - e_in, 0, 300)
+        consumo_proyecto = (luz_faltante / 300) * potencia_total_kw * horario_uso
         
-        # El calor de luces removido debe calcularse HORA POR HORA
-        calor_luces_removido_kw_horario = consumo_base - c_temp
-        
-        # Cargas térmicas horarias (Ganancia Solar + Conducción)
-        q_solar = (iluminancia_anual/110.0) * (area_nave * s) * datos_domo['SHGC'] / 1000.0
-        conduccion = (area_nave * s) * (datos_domo['U_Value'] - 0.5) * (temp_anual - 21.0) / 1000.0
-        
-        # Carga neta horaria real
-        carga_neta = q_solar + conduccion - calor_luces_removido_kw_horario
-        
-        # Penalización HVAC
-        penalizacion = -np.sum(np.where(temp_anual > 24.0, carga_neta/3.0, 0))
-        hvac_penalties.append(penalizacion)
+        sda_pct = (np.sum((e_in >= 300) & (horario_uso == 1.0)) / horas_laborales) * 100
 
-    # --- CREACIÓN DEL GRÁFICO CON ETIQUETAS EXACTAS DE COLAB ---
-    fig_curve = go.Figure()
-    
-    fig_curve.add_trace(go.Scatter(
-        x=sfr_range*100, y=ahorros, 
-        name='Ahorro Iluminación', 
-        line=dict(color='#3498db', width=2, dash='dash'),
-        hovertemplate='Ahorro Luz: %{y:,.0f} kWh<extra></extra>'
-    ))
-    
-    fig_curve.add_trace(go.Scatter(
-        x=sfr_range*100, y=hvac_penalties, 
-        name='Impacto HVAC', 
-        line=dict(color='#e74c3c', width=2),
-        hovertemplate='Carga HVAC: %{y:,.0f} kWh<extra></extra>'
-    ))
-    
-    fig_curve.add_trace(go.Scatter(
-        x=sfr_range*100, y=np.array(ahorros)+np.array(hvac_penalties), 
-        name='<b>AHORRO NETO TOTAL</b>', 
-        line=dict(color='#2ecc71', width=5),
-        hovertemplate='<b>Neto: %{y:,.0f} kWh</b><extra></extra>'
-    ))
+        # Visualización
+        c1, c2 = st.columns(2)
+        with c1:
+            st.plotly_chart(px.bar(x=['Base', 'Proyecto'], y=[np.sum(consumo_base), np.sum(consumo_proyecto)], 
+                                   title="Consumo Eléctrico Anual (kWh)", color=['#e74c3c', '#2ecc71']), use_container_width=True)
+        with c2:
+            st.metric("Autonomía Lumínica (sDA)", f"{sda_pct:.1f}%")
+            
+        # Gráfico de Optimización SFR
+        st.markdown("### Análisis de Sensibilidad Energética (Neto)")
+        sfr_range = np.linspace(0.01, 0.10, 10)
+        neto = []
+        for s in sfr_range:
+            ahorro_l = np.sum(consumo_base) - np.sum((np.clip(300 - (lux_anual * s * 0.5 * cu_proyecto), 0, 300)/300) * potencia_total_kw * horario_uso)
+            carga_hvac = np.sum(np.where(temp_anual > 24, (lux_anual/110 * area_nave * s * datos_domo['SHGC'])/3000, 0))
+            neto.append(ahorro_l - carga_hvac)
+        
+        fig_opt = px.line(x=sfr_range*100, y=neto, title="Punto Óptimo de Ahorro Neto", labels={'x':'SFR %', 'y':'kWh Ahorrados'})
+        st.plotly_chart(fig_opt, use_container_width=True)
+    else:
+        st.warning("⚠️ Selecciona una ubicación en el mapa primero.")
 
-    fig_curve.update_layout(
-        xaxis=dict(title="Relación de Tragaluces (SFR %)", dtick=1),
-        yaxis=dict(title="Energía Anual (kWh/año)", tickformat=","),
-        height=400,
-        template="plotly_white", 
-        hovermode="x unified", # ESTO ES LO QUE AGRUPA LAS ETIQUETAS
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
-    )
-    
-    st.plotly_chart(fig_curve, use_container_width=True)
-
-    # 4. HEATMAP
-    st.markdown("### Mapa de Disponibilidad de Luz Natural")
-    df_h = pd.DataFrame({'Mes': pd.date_range("2023-01-01", periods=8760, freq="h").month, 
-                         'Hora': pd.date_range("2023-01-01", periods=8760, freq="h").hour, 'Lux': e_in})
-    grid_lux = df_h.pivot_table(index='Mes', columns='Hora', values='Lux', aggfunc='mean')
-    grid_lux.index = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-    
-    fig_heat = px.imshow(grid_lux, x=list(range(24)), y=grid_lux.index, color_continuous_scale='Viridis', aspect="auto")
-    fig_heat.update_layout(height=350, margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig_heat, use_container_width=True)
-
-# ==========================================
-# 6. LEAD GENERATION (CALL TO ACTION)
-# ==========================================
+# Formulario de contacto
 st.divider()
-st.markdown("<h3 style='text-align: center;'>📄 Solicitar Proyecto Ejecutivo (BEM)</h3>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Estimación analítica. Para validación LEED y cotización de domos, registre su proyecto.</p>", unsafe_allow_html=True)
-
-col_f1, col_f2, col_f3 = st.columns([1,2,1])
-with col_f2:
-    with st.form("lead_form"):
-        st.text_input("Nombre Completo")
-        st.text_input("Empresa")
-        st.text_input("Correo Electrónico")
-        if st.form_submit_button("Enviar Solicitud a Ingeniería", use_container_width=True):
-            st.success("✅ Recibido. Te contactaremos a la brevedad.")
+with st.expander("📄 Solicitar Informe de Ingeniería"):
+    with st.form("contact"):
+        st.text_input("Nombre")
+        st.text_input("Correo")
+        if st.form_submit_button("Enviar"): st.success("Enviado")
