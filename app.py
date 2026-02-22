@@ -55,7 +55,8 @@ def cargar_catalogo():
     df['Ancho_m'] = (df['Ancho_in'] * 0.0254).round(3)
     df['Largo_m'] = (df['Largo_in'] * 0.0254).round(3)
     return df
-
+# Llamada vital para que el resto del código reconozca la base de datos
+    df_domos = cargar_catalogo()
 # ==========================================
 # 3. MOTOR NASA (CORREGIDO)
 # ==========================================
@@ -165,15 +166,15 @@ with tab_analitica:
     if st.session_state['clima_data'] is not None:
         lux = st.session_state['clima_data']['lux']
         temp = st.session_state['clima_data']['temp']
+        ghi = st.session_state['clima_data']['ghi']
         
-        # --- CÁLCULOS SKYCALC ---
+        # 1. KPIs SUPERIORES
         cu = 0.85 * (math.exp(-0.12 * ((5 * alto * (ancho + largo)) / (ancho * largo))))
         e_in = lux * sfr_target * 0.85 * 0.9 * datos_domo['VLT'] * cu
-        pot_kw = (ancho * largo * 8.0) / 1000.0
-        c_base = pot_kw * horario_uso
-        c_proy = (np.clip(300 - e_in, 0, 300) / 300) * pot_kw * horario_uso
+        pot_total_kw = (ancho * largo * lpd_real) / 1000.0
+        c_base = pot_total_kw * horario_uso
+        c_proy = (np.clip(300 - e_in, 0, 300) / 300) * pot_total_kw * horario_uso
         
-        # --- VISUALES RESTAURADAS (DASHBOARD) ---
         st.subheader("Reporte Preliminar de Eficiencia Energética")
         c1, c2 = st.columns(2)
         with c1:
@@ -181,7 +182,7 @@ with tab_analitica:
                 go.Bar(name='Sin Domos', x=['Consumo'], y=[np.sum(c_base)], marker_color='#E74C3C', text=[f"{np.sum(c_base):,.0f} kWh"], textposition='auto'),
                 go.Bar(name='Con Sunoptics', x=['Consumo'], y=[np.sum(c_proy)], marker_color='#2ECC71', text=[f"{np.sum(c_proy):,.0f} kWh"], textposition='auto')
             ])
-            fig_bar.update_layout(title="Comparativa de Consumo (kWh/año)", height=400, barmode='group', template="plotly_white")
+            fig_bar.update_layout(title="Consumo Eléctrico Anual", height=400, barmode='group', template="plotly_white")
             st.plotly_chart(fig_bar, use_container_width=True)
             
         with c2:
@@ -195,52 +196,40 @@ with tab_analitica:
             fig_sda.update_layout(height=400, template="plotly_white")
             st.plotly_chart(fig_sda, use_container_width=True)
 
-        # --- CURVA DE OPTIMIZACIÓN CON TOOLTIPS AGRUPADOS ---
+        # 2. CURVA DE OPTIMIZACIÓN (LÓGICA SKYCALC 3.0)
         st.markdown("### Análisis de Optimización Energética (Flujo Dividido)")
         sfr_range = np.linspace(0.01, 0.10, 10)
         ahorros, cargas_hvac, netos = [], [], []
-        
-# --- MOTOR DE CÁLCULO SENSIBILIZADO (SKYCALC LOGIC) ---
-        st.markdown("### Análisis de Optimización Energética (Flujo Dividido)")
-        sfr_range = np.linspace(0.01, 0.10, 10)
-        ahorros, cargas_hvac, netos = [], [], []
-        
-        # Potencia total instalada según ASHRAE para esta nave
-        pot_total_kw = (ancho * largo * lpd_real) / 1000.0
-        cop_sistema = 3.0 # Eficiencia promedio del AC
+        cop_sistema = 3.0 # Eficiencia típica de enfriamiento
 
         for s in sfr_range:
-            # 1. AHORRO LUMÍNICO
-            e_t = lux * s * 0.75 * cu # 0.75 es factor de mantenimiento
+            # A) AHORRO LUMÍNICO
+            e_t = lux * s * 0.75 * cu 
             c_t = (np.clip(300 - e_t, 0, 300) / 300) * pot_total_kw * horario_uso
             ah_luz_hora = (pot_total_kw * horario_uso) - c_t
             ah_luz_anual = np.sum(ah_luz_hora)
             
-            # 2. IMPACTO TÉRMICO (Sensibilizado)
-            # A) Ganancia Solar (SHGC)
-            q_solar = (st.session_state['clima_data']['ghi'] * (ancho * largo * s) * datos_domo['SHGC'])
-            
-            # B) Conducción (U-Value Domo vs U-Value Techo)
-            # Delta U: El calor entra por el domo pero deja de entrar por el área de techo que quitamos
+            # B) IMPACTO HVAC (Física de Domos vs Techo ASHRAE)
+            # Ganancia Solar (SHGC)
+            q_solar = (ghi * (ancho * largo * s) * datos_domo['SHGC'])
+            # Conducción: El domo vs el techo removido (SGZ castigará más aquí)
             q_cond = (ancho * largo * s) * (datos_domo['U_Value'] - u_techo_real) * (temp - 22.0)
+            # Crédito térmico: Restamos el calor de las luces que YA NO están encendidas
+            q_luces_evitado = ah_luz_hora * 1000 
             
-            # C) Crédito térmico de luces (Calor evitado por apagar lámparas)
-            q_luces_evitado = ah_luz_hora * 1000 # de kW a Watts
-            
-            # CARGA NETA: Lo que el aire acondicionado debe "sacar" adicionalmente
+            # CARGA NETA HORARIA
             carga_neta_w = q_solar + q_cond - q_luces_evitado
-            
-            # Penalización HVAC: Solo cuando hace calor (>24°C)
-            penal_h = np.sum(np.where(temp > 24, carga_neta_w / (cop_sistema * 1000), 0))
+            # Penalización: Solo si temp > 24°C y carga_neta > 0
+            penal_h = np.sum(np.where((temp > 24) & (carga_neta_w > 0), carga_neta_w / (cop_sistema * 1000), 0))
             
             ahorros.append(ah_luz_anual)
             cargas_hvac.append(-penal_h)
             netos.append(ah_luz_anual - penal_h)
 
         fig_opt = go.Figure()
-        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=ahorros, name='Ahorro Luz', line=dict(color='#3498db', dash='dash'), hovertemplate='%{y:,.0f} kWh<extra></extra>'))
-        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=cargas_hvac, name='Impacto HVAC', line=dict(color='#e74c3c'), hovertemplate='%{y:,.0f} kWh<extra></extra>'))
-        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=netos, name='<b>NETO TOTAL</b>', line=dict(color='#2ecc71', width=4), hovertemplate='<b>%{y:,.0f} kWh</b><extra></extra>'))
+        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=ahorros, name='Ahorro Luz', line=dict(color='#3498db', dash='dash')))
+        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=cargas_hvac, name='Carga HVAC', line=dict(color='#e74c3c')))
+        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=netos, name='<b>NETO TOTAL</b>', line=dict(color='#2ecc71', width=4)))
         
         fig_opt.update_layout(xaxis_title="SFR %", yaxis_title="Energía (kWh)", hovermode="x unified", template="plotly_white", height=500)
         st.plotly_chart(fig_opt, use_container_width=True)
