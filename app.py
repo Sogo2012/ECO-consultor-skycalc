@@ -218,22 +218,33 @@ with tab_analitica:
         fig_gauge.update_layout(height=350)
         st.plotly_chart(fig_gauge, use_container_width=True)
 
-    # 3. CURVA TÉRMICA (HVAC)
+   # 3. CURVA TÉRMICA (HVAC)
     st.markdown("### Curva de Optimización Energética (Flujo Dividido)")
     sfr_range = np.linspace(0.01, 0.10, 10)
     ahorros, hvac_penalties = [], []
     
     for s in sfr_range:
+        # Ahorro de luz anual
         e_temp = iluminancia_anual * s * (0.85 * 0.9 * datos_domo['VLT']) * cu_proyecto
         c_temp = (np.clip(300 - e_temp, 0, 300) / 300) * potencia_kw * horario_uso
-        ahorro_luz = np.sum(consumo_base) - np.sum(c_temp)
-        ahorros.append(ahorro_luz)
         
-        # Penalización HVAC
-        q_solar = (iluminancia_anual/110) * (area_nave * s) * datos_domo['SHGC'] / 1000.0
-        conduccion = (area_nave * s) * (datos_domo['U_Value'] - 0.5) * (temp_anual - 21) / 1000.0
-        carga_neta = q_solar + conduccion - ahorro_luz
-        hvac_penalties.append(-np.sum(np.where(temp_anual > 24, carga_neta/3.0, 0)))
+        ahorro_luz_total = np.sum(consumo_base) - np.sum(c_temp)
+        ahorros.append(ahorro_luz_total)
+        
+        # --- AQUÍ ESTABA EL ERROR VECTORIAL ---
+        # El calor de luces removido debe calcularse HORA POR HORA, no con el total anual
+        calor_luces_removido_kw_horario = consumo_base - c_temp
+        
+        # Cargas térmicas horarias (Ganancia Solar + Conducción)
+        q_solar = (iluminancia_anual/110.0) * (area_nave * s) * datos_domo['SHGC'] / 1000.0
+        conduccion = (area_nave * s) * (datos_domo['U_Value'] - 0.5) * (temp_anual - 21.0) / 1000.0
+        
+        # Carga neta horaria real
+        carga_neta = q_solar + conduccion - calor_luces_removido_kw_horario
+        
+        # Penalización HVAC (Solo suma cuando la temp exterior es mayor a 24°C)
+        penalizacion = -np.sum(np.where(temp_anual > 24.0, carga_neta/3.0, 0))
+        hvac_penalties.append(penalizacion)
 
     fig_curve = go.Figure()
     fig_curve.add_trace(go.Scatter(x=sfr_range*100, y=ahorros, name='Ahorro Luz', line=dict(dash='dash', color='#3498db')))
