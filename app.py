@@ -88,41 +88,44 @@ with st.sidebar:
     datos_domo = df_domos[df_domos['Modelo'] == modelo_sel].iloc[0]
 
     st.header("📚 3. Nave ASHRAE")
-    mapa_programas = {"Warehouse": "NonRes Warehouse Conditioned", "Manufacturing": "NonRes Factory High-Bay", "Retail": "NonRes Retail"}
-    mapa_materiales = {"Generic Roof Membrane": "Generic Roof Membrane", "Metal Deck": "Generic Metal Roof", "Concrete": "Generic 8in Concrete"}
+    # LPD: Valores directos para evitar buscar la versión de ASHRAE anidada en LBT
+    mapa_programas = {"Warehouse": 6.5, "Manufacturing": 12.0, "Retail": 16.0}
+    
+    # 🟢 ¡AQUÍ ESTÁN LOS MATERIALES EXACTOS QUE ENCONTRASTE EN COLAB! 🟢
+    mapa_materiales = {
+        "Membrana Genérica (Aislada)": "Generic Roof Membrane", 
+        "Concreto Pesado": "Generic HW Concrete", 
+        "Concreto Ligero": "Generic LW Concrete"
+    }
+    
     uso_edificio = st.selectbox("Uso", list(mapa_programas.keys()))
     material_techo = st.selectbox("Cubierta", list(mapa_materiales.keys()))
 
-# --- LOGICA DE EXTRACCIÓN LBT SENSIBILIZADA ---
+# --- LOGICA DE EXTRACCIÓN LBT (AHORA SÍ FUNCIONARÁ) ---
 try:
-    from honeybee_energy.lib.programtypes import program_type_by_identifier
     from honeybee_energy.lib.materials import opaque_material_by_identifier
     
-    # 1. Buscamos el programa ASHRAE real para obtener el LPD dinámico
-    prog = program_type_by_identifier(mapa_programas[uso_edificio])
-    lpd_real = prog.lighting.watts_per_area  # W/m2 extraído de la biblioteca [cite: 60]
+    # 1. Asignamos LPD dinámicamente
+    lpd_real = mapa_programas[uso_edificio]
     
-    # 2. Buscamos el material de la cubierta para el balance térmico
-    mat = opaque_material_by_identifier(mapa_materiales[material_techo])
+    # 2. Extraemos la física REAL de la librería Honeybee
+    nombre_material_lbt = mapa_materiales[material_techo]
+    mat = opaque_material_by_identifier(nombre_material_lbt)
     
-    # Cálculo físico del U-Value del techo basado en Honeybee
-    # R_total = R_conduccion + R_superficial_interior + R_superficial_exterior
-    # Usamos 0.15 como estándar de resistencias superficiales (ASHRAE) [cite: 183]
+    # Cálculo físico: U = 1 / (R_conduccion + R_superficiales)
     u_techo_real = 1 / ((mat.thickness / mat.conductivity) + 0.15) 
     
+    st.sidebar.success(f"✅ Conectado a LBT\nLPD: {lpd_real} W/m²\nU-Roof: {u_techo_real:.3f} W/m²K")
+
 except Exception as e:
-    # Fallback de seguridad si falla la biblioteca
     lpd_real, u_techo_real = 8.0, 0.5
-    st.sidebar.warning(f"⚠️ Usando valores estándar. Error LBT: {e}")
+    st.sidebar.error(f"Error LBT: {e}")
 
-st.sidebar.info(f"**Propiedades Físicas:**\nLPD: {lpd_real} W/m²\nU-Roof: {u_techo_real:.3f} W/m²K")
-
-# --- NO ELIMINAR: Definición del Horario (Vital para el cálculo de ahorro) ---
+# --- HORARIO (VITAL) ---
 horario_uso = np.zeros(8760)
 for d in range(365): 
-    if d % 7 < 6: # Lunes a Sábado
+    if d % 7 < 6: 
         for h in range(8, 18): horario_uso[(d * 24) + h] = 1.0
-
 # ==========================================
 # 5. TABS INTERFAZ
 # ==========================================
