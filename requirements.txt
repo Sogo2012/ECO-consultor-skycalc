@@ -8,3 +8,5 @@ streamlit-folium
 requests
 ladybug-core
 ladybug-geometry
+honeybee-core
+honeybee-energy
