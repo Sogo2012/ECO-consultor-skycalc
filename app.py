@@ -45,8 +45,6 @@ def cargar_catalogo():
                             'Sencillo (SGZ)', 'Doble (DGZ)', 'Storm Class', 'Doble (DGZ)'],
         'VLT': [0.74, 0.67, 0.74, 0.67, 0.74, 0.67, 0.52, 0.64],
         'SHGC': [0.68, 0.48, 0.68, 0.48, 0.68, 0.48, 0.24, 0.31],
-        # SENSIBILIZACIÓN: SGZ (Sencillo) sube a 5.5 W/m2K (policarbonato 6mm)
-        # DGZ (Doble) se queda en 2.8 - 3.2 aprox.
         'U_Value': [5.50, 3.20, 5.50, 3.20, 5.50, 3.20, 2.50, 3.20],
         'Ancho_in': [51.25, 51.25, 51.25, 51.25, 52.25, 52.25, 52.25, 52.25],
         'Largo_in': [51.25, 51.25, 87.25, 87.25, 100.25, 100.25, 100.25, 100.25]
@@ -55,8 +53,9 @@ def cargar_catalogo():
     df['Ancho_m'] = (df['Ancho_in'] * 0.0254).round(3)
     df['Largo_m'] = (df['Largo_in'] * 0.0254).round(3)
     return df
-# Llamada vital para que el resto del código reconozca la base de datos
-    df_domos = cargar_catalogo()
+
+# VITAL: Esta línea debe estar pegada al borde izquierdo (sin espacios)
+df_domos = cargar_catalogo()
 # ==========================================
 # 3. MOTOR NASA (CORREGIDO)
 # ==========================================
@@ -89,7 +88,6 @@ with st.sidebar:
     datos_domo = df_domos[df_domos['Modelo'] == modelo_sel].iloc[0]
 
     st.header("📚 3. Configuración de Nave (ASHRAE)")
-    # Mapeo de nombres UI a identificadores Honeybee
     mapa_programas = {
         "Warehouse": "NonRes Warehouse Conditioned",
         "Manufacturing": "NonRes Factory High-Bay",
@@ -100,26 +98,21 @@ with st.sidebar:
         "Metal Deck": "Generic Metal Roof",
         "Concrete": "Generic 8in Concrete"
     }
-    
     uso_edificio = st.selectbox("Uso del Edificio", list(mapa_programas.keys()))
     material_techo = st.selectbox("Material de Cubierta", list(mapa_materiales.keys()))
 
-# --- LOGICA DE EXTRACCIÓN LBT (Fuera del Sidebar) ---
-# Intentamos extraer datos reales de la librería Honeybee
+# --- LOGICA DE EXTRACCIÓN LBT (Fuera del Sidebar para disponibilidad global) ---
 try:
     from honeybee_energy.lib.programtypes import program_type_by_identifier
     from honeybee_energy.lib.materials import opaque_material_by_identifier
     
     prog = program_type_by_identifier(mapa_programas[uso_edificio])
-    lpd_real = prog.lighting.watts_per_area  # W/m2 real de ASHRAE
+    lpd_real = prog.lighting.watts_per_area
     
     mat = opaque_material_by_identifier(mapa_materiales[material_techo])
-    # Calculamos U-Value del techo (R = espesor / conductividad + resistencias superficiales)
     u_techo_real = 1 / ((mat.thickness / mat.conductivity) + 0.15) 
 except:
-    # Fallback si LBT no carga en el servidor
-    lpd_real = 8.0 
-    u_techo_real = 0.5
+    lpd_real, u_techo_real = 8.0, 0.5
 
 st.sidebar.info(f"**ASHRAE Detectado:**\nLPD: {lpd_real} W/m²\nU-Roof: {u_techo_real:.3f} W/m²K")
 
