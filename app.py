@@ -9,16 +9,20 @@ import folium
 from streamlit_folium import st_folium
 import datetime
 import requests
-
-# --- INTENTO DE IMPORTAR LADYBUG/HONEYBEE (Con Fallbacks seguros) ---
+# --- IMPORTACIÓN SEPARADA PARA EVITAR CAÍDAS ---
 try:
     from ladybug.sunpath import Sunpath
     from ladybug.location import Location
-    from honeybee_energy.lib.programtypes import PROGRAM_TYPES, program_type_by_identifier
-    from honeybee_energy.lib.materials import OPAQUE_MATERIALS, opaque_material_by_identifier
     LADYBUG_READY = True
 except ImportError:
     LADYBUG_READY = False
+
+try:
+    from honeybee_energy.lib.programtypes import PROGRAM_TYPES, program_type_by_identifier
+    from honeybee_energy.lib.materials import OPAQUE_MATERIALS, opaque_material_by_identifier
+    HONEYBEE_READY = True
+except ImportError:
+    HONEYBEE_READY = False
 
 # ==========================================
 # 1. CONFIGURACIÓN DE LA APP Y BRANDING
@@ -79,7 +83,41 @@ with st.sidebar:
     material_techo = st.selectbox("Material de Cubierta", ["Generic Roof Membrane", "Metal Deck", "Concrete"])
 
 area_nave = ancho * largo
+# ==========================================
+# MOTOR GEOGRÁFICO Y BÚSQUEDA EPW (ALGORITMO HAVERSINE)
+# ==========================================
+@st.cache_data
+def cargar_catalogo_estaciones():
+    """Descarga el catálogo maestro mundial de estaciones EPW del NREL."""
+    url_master = "https://raw.githubusercontent.com/NREL/EnergyPlus/develop/weather/master.geojson"
+    try:
+        r = requests.get(url_master, timeout=10)
+        return r.json()["features"]
+    except:
+        return []
 
+def buscar_estacion_cercana(lat_obj, lon_obj):
+    """Encuentra la estación más cercana calculando la distancia esférica."""
+    estaciones = cargar_catalogo_estaciones()
+    if not estaciones: return None
+    estacion_cercana = None
+    min_dist = float('inf')
+    for est in estaciones:
+        lon_est, lat_est = est["geometry"]["coordinates"]
+        R = 6371.0 # Radio de la Tierra en km
+        dlat, dlon = math.radians(lat_est - lat_obj), math.radians(lon_est - lon_obj)
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat_obj))*math.cos(math.radians(lat_est))*math.sin(dlon/2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        distancia = R * c
+        if distancia < min_dist:
+            min_dist = distancia
+            estacion_cercana = {"nombre": est["properties"]["title"], "url": est["properties"]["epw"], "dist_km": round(distancia, 1)}
+    return estacion_cercana
+
+# Inicializar memoria de la App
+if 'epw_url_activa' not in st.session_state:
+    st.session_state['epw_url_activa'] = "https://energyplus-weather.s3.amazonaws.com/north_and_central_america_wmo_region_4/MEX/MEX_DF_Mexico.City-Benito.Juarez.Intl.AP.766790_TMY3/MEX_DF_Mexico.City-Benito.Juarez.Intl.AP.766790_TMY3.epw"
+    st.session_state['nombre_estacion'] = "Ciudad de México (Por defecto)"
 # ==========================================
 # 4. MOTORES FÍSICOS Y NORMATIVOS
 # ==========================================
@@ -139,35 +177,36 @@ tab_geo, tab_3d, tab_analitica = st.tabs(["📍 Contexto Climático", "📐 Dist
 
 # --- TAB 1: CONTEXTO GEOGRÁFICO Y SOLAR ---
 with tab_geo:
-    st.subheader("Buscador de Estación Meteorológica (EPW)")
+    st.subheader("Buscador Interactivo de Estaciones Meteorológicas")
     col_mapa, col_datos = st.columns([2, 1])
     
     with col_mapa:
+        # Centramos el mapa inicialmente en una zona neutra o la última posición
         m = folium.Map(location=[20.588, -100.389], zoom_start=5)
         m.add_child(folium.LatLngPopup())
         map_data = st_folium(m, height=400, width=700)
     
     with col_datos:
         if map_data and map_data['last_clicked']:
-            lat = map_data['last_clicked']['lat']
-            lon = map_data['last_clicked']['lng']
-            st.success(f"**Coordenadas:** {lat:.3f}, {lon:.3f}")
-            st.info("📡 **Estación Ladybug Detectada:**\nAeropuerto Internacional (TMY3)\n**Distancia:** 14.2 km")
+            lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
+            st.success(f"**Punto de Proyecto:** {lat:.3f}, {lon:.3f}")
+            
+            info_clima = buscar_estacion_cercana(lat, lon)
+            
+            if info_clima:
+                st.info(f"📡 **Estación detectada:**\n{info_clima['nombre']}\n\n📍 **Distancia:** {info_clima['dist_km']} km")
+                st.session_state['epw_url_activa'] = info_clima['url']
+                st.session_state['nombre_estacion'] = info_clima['nombre']
             
             if LADYBUG_READY:
                 loc = Location("Proyecto", latitude=lat, longitude=lon, time_zone=0)
                 sp = Sunpath.from_location(loc)
                 sol = sp.calculate_sun(month=6, day=21, hour=12)
-                st.markdown("### 🌞 Motor Solar (Solsticio)")
+                st.markdown("### 🌞 Posición Solar (Solsticio)")
                 st.metric("Altitud Solar", f"{round(sol.altitude, 2)}°")
                 st.metric("Azimut", f"{round(sol.azimuth, 2)}°")
-            else:
-                st.warning("Motor Ladybug offline. Simulando solsticio de verano...")
-                st.metric("Altitud Solar", "88.2°")
-                st.metric("Azimut", "180.0°")
         else:
-            st.warning("👈 Selecciona la ubicación del proyecto en el mapa.")
-
+            st.warning("👈 Haz clic en el mapa para vincular el clima real.")
 # --- TAB 2: GEOMETRÍA Y MATERIALES ---
 with tab_3d:
     st.subheader(f"Plano de Ingeniería: Distribución Uniforme (Regla S/2)")
