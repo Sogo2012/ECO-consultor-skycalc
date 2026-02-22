@@ -100,11 +100,37 @@ cu_proyecto = calcular_cu(ancho, largo, alto)
 horario_uso = generar_horario_ashrae_fallback() # Asumimos fallback por velocidad en web
 horas_laborales = np.sum(horario_uso)
 
-# Simulación Climática (Para asegurar que la web no colapse si no hay archivo EPW cargado)
-np.random.seed(42)
-iluminancia_base = np.clip(np.sin(np.linspace(0, np.pi, 24)) * 80000, 0, None)
-iluminancia_anual = np.tile(iluminancia_base, 365) * np.random.uniform(0.5, 1.0, 8760)
-temp_anual = np.random.normal(25, 5, 8760)
+# ==========================================
+# 4.1 MOTOR CLIMÁTICO REAL (LADYBUG EPW)
+# ==========================================
+@st.cache_data
+def obtener_clima_real(url_epw):
+    """Descarga archivo EPW y extrae 8760 valores reales de luz y temperatura."""
+    ruta_epw = "clima_proyecto.epw"
+    try:
+        import requests
+        from ladybug.epw import EPW # Se importa aquí adentro por seguridad
+        
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url_epw, headers=headers, timeout=10)
+        with open(ruta_epw, "wb") as f:
+            f.write(response.content)
+            
+        epw_file = EPW(ruta_epw)
+        lux_real = epw_file.global_horizontal_illuminance.values
+        temp_real = epw_file.dry_bulb_temperature.values
+        return np.array(lux_real), np.array(temp_real), epw_file.location.city
+    
+    except Exception as e:
+        # Si no hay internet o falla la librería, entra el simulador
+        st.warning(f"⚠️ Usando clima de respaldo simulado. Motivo: {e}")
+        lux_falso = np.clip(np.sin(np.linspace(0, np.pi, 24)) * 60000, 0, None)
+        return np.tile(lux_falso, 365) * np.random.uniform(0.3, 1.0, 8760), np.random.normal(24, 6, 8760), "Simulación"
+
+# URL de clima real (Ejemplo: Ciudad de México TMY3)
+url_clima_ejemplo = "https://energyplus-weather.s3.amazonaws.com/north_and_central_america_wmo_region_4/MEX/MEX_DF_Mexico.City-Benito.Juarez.Intl.AP.766790_TMY3/MEX_DF_Mexico.City-Benito.Juarez.Intl.AP.766790_TMY3.epw"
+
+iluminancia_anual, temp_anual, ciudad_clima = obtener_clima_real(url_clima_ejemplo)
 
 # ==========================================
 # 5. INTERFAZ PRINCIPAL (TABS)
