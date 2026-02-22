@@ -2,3 +2,6 @@ streamlit
 pandas
 numpy
 plotly
+folium
+streamlit-folium
+ladybug-core
