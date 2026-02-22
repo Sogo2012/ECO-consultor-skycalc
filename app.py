@@ -200,6 +200,32 @@ with tab_geo:
                     st.session_state['clima_data'] = obtener_clima_nasa(lat, lon)
                     st.rerun()
         else:
+            st.info("Presiona 'Localizar Estaciones' en el sidebar para ver el mapa.")
+
+    with col2:
+        st.subheader("Estaciones Disponibles")
+        if 'df_cercanas' in st.session_state:
+            st.write("Selecciona la estación para descargar datos:")
+            for idx, row in st.session_state.df_cercanas.iterrows():
+                if st.button(f"📥 {row['Estación']} ({row['Distancia (km)']} km)", key=f"btn_{idx}"):
+                    with st.spinner(f"Descargando datos de {row['Estación']}..."):
+                        path = descargar_y_extraer_epw(row['URL_ZIP'])
+                        if path:
+                            try:
+                                data = procesar_datos_clima(path)
+                                st.session_state.clima_data = data
+                                st.session_state.estacion_seleccionada = row['Estación']
+                                st.success("✅ Datos cargados correctamente.")
+                            finally:
+                                # Limpiar archivo temporal
+                                if os.path.exists(path):
+                                    os.remove(path)
+        
+        st.divider()
+        st.subheader("Milla Cero (NASA POWER)")
+        if st.button("🚀 Usar Datos Satelitales (Alta Precisión)"):
+            st.warning("Integrando con API de NASA POWER... (Simulado para esta demo)")
+            st.session_state.estacion_seleccionada = "NASA POWER Satelital"
             st.info("👈 Haz clic en el mapa para localizar tu proyecto.")
             
         if st.session_state['clima_data']:
@@ -280,6 +306,7 @@ with tab_analitica:
         fig_opt.update_layout(xaxis_title="SFR %", yaxis_title="Energía (kWh)", hovermode="x unified", template="plotly_white")
         st.plotly_chart(fig_opt, use_container_width=True)
     else:
+        st.info("Completa la simulación primero.")
         st.warning("⚠️ Selecciona una ubicación en el mapa primero.")
 
 st.info("Ingeniería Lumínica, Térmica y BEM | Eco Consultor.")
