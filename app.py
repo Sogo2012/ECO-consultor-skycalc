@@ -240,4 +240,31 @@ with tab_analitica:
     fig_curve.add_trace(go.Scatter(x=sfr_range*100, y=hvac_penalties, name='Carga HVAC', line=dict(color='#e74c3c')))
     fig_curve.add_trace(go.Scatter(x=sfr_range*100, y=np.array(ahorros)+np.array(hvac_penalties), name='Ahorro Neto', line=dict(color='#2ecc71', width=4)))
     fig_curve.update_layout(xaxis_title="Relación de Tragaluces (SFR %)", yaxis_title="Energía (kWh)", height=400)
-    st.plotly_chart(fig_curve, use_
+    st.plotly_chart(fig_curve, use_container_width=True)
+
+    # 4. HEATMAP
+    st.markdown("### Mapa de Disponibilidad de Luz Natural")
+    df_h = pd.DataFrame({'Mes': pd.date_range("2023-01-01", periods=8760, freq="h").month, 
+                         'Hora': pd.date_range("2023-01-01", periods=8760, freq="h").hour, 'Lux': e_in})
+    grid_lux = df_h.pivot_table(index='Mes', columns='Hora', values='Lux', aggfunc='mean')
+    grid_lux.index = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+    
+    fig_heat = px.imshow(grid_lux, x=list(range(24)), y=grid_lux.index, color_continuous_scale='Viridis', aspect="auto")
+    fig_heat.update_layout(height=350, margin=dict(l=0, r=0, t=30, b=0))
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+# ==========================================
+# 6. LEAD GENERATION (CALL TO ACTION)
+# ==========================================
+st.divider()
+st.markdown("<h3 style='text-align: center;'>📄 Solicitar Proyecto Ejecutivo (BEM)</h3>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Estimación analítica. Para validación LEED y cotización de domos, registre su proyecto.</p>", unsafe_allow_html=True)
+
+col_f1, col_f2, col_f3 = st.columns([1,2,1])
+with col_f2:
+    with st.form("lead_form"):
+        st.text_input("Nombre Completo")
+        st.text_input("Empresa")
+        st.text_input("Correo Electrónico")
+        if st.form_submit_button("Enviar Solicitud a Ingeniería", use_container_width=True):
+            st.success("✅ Recibido. Te contactaremos a la brevedad.")
