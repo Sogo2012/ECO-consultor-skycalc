@@ -138,7 +138,10 @@ tab_geo, tab_3d, tab_analitica = st.tabs(["📍 Contexto Climático", "📐 Dist
 with tab_geo:
     st.subheader("Buscador Satelital de Irradiancia y Nubosidad")
     col_mapa, col_datos = st.columns([2, 1])
-    st.write("Registros recibidos:", len(st.session_state['clima_data']['lux']))
+    if st.session_state['clima_data']:
+    st.success(f"✅ Conexión exitosa: {len(st.session_state['clima_data']['lux'])} registros recibidos.")
+else:
+    st.info("💡 Por favor, haz clic en un punto del mapa para obtener los datos de la NASA.")
     
     with col_mapa:
         m = folium.Map(location=[9.933, -84.083], zoom_start=7) # Centrado en Costa Rica
