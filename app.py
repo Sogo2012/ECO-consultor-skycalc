@@ -10,7 +10,7 @@ from streamlit_folium import st_folium
 import datetime
 import requests
 
-# --- IMPORTACIÓN SEPARADA PARA EVITAR CAÍDAS ---
+# --- IMPORTACIÓN LADYBUG ---
 try:
     from ladybug.sunpath import Sunpath
     from ladybug.location import Location
@@ -19,18 +19,18 @@ except ImportError:
     LADYBUG_READY = False
 
 # ==========================================
-# 1. CONFIGURACIÓN DE LA APP Y BRANDING
+# 1. CONFIGURACIÓN Y BRANDING
 # ==========================================
-st.set_page_config(page_title="SkyCalc 2.0 | Eco Consultor", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="SkyCalc 2.0 | Eco Consultor", layout="wide")
 
-col1, col2 = st.columns([1, 6])
-with col2:
+col_logo, col_tit = st.columns([1, 6])
+with col_tit:
     st.title("SkyCalc 2.0: Daylight Autonomy Estimator")
-    st.markdown("Powered by **Eco Consultor** & **Sunoptics®** | *Ingeniería Lumínica, Térmica y BEM*")
+    st.markdown("Powered by **Eco Consultor** & **Sunoptics®** | *Basado en Motor IESNA & SkyCalc 3.0*")
 st.divider()
 
 # ==========================================
-# 2. BASE DE DATOS SUNOPTICS (COMPLETA)
+# 2. BASE DE DATOS MAESTRA (COMPLETA)
 # ==========================================
 @st.cache_data
 def cargar_catalogo():
@@ -41,13 +41,11 @@ def cargar_catalogo():
             'Signature 800MD 4080 SGZ', 'Signature 800MD 4080 DGZ',
             'Signature 900SC 4080 (Storm)', 'Smoke Vent SVT2 4080 DGZ'
         ],
-        'Acristalamiento': ['Sencillo (SGZ)', 'Doble (DGZ)', 'Sencillo (SGZ)', 'Doble (DGZ)', 
-                            'Sencillo (SGZ)', 'Doble (DGZ)', 'Storm Class', 'Doble (DGZ)'],
-        'Ancho_in': [51.25, 51.25, 51.25, 51.25, 52.25, 52.25, 52.25, 52.25],
-        'Largo_in': [51.25, 51.25, 87.25, 87.25, 100.25, 100.25, 100.25, 100.25],
         'VLT': [0.74, 0.67, 0.74, 0.67, 0.74, 0.67, 0.52, 0.64],
         'SHGC': [0.68, 0.48, 0.68, 0.48, 0.68, 0.48, 0.24, 0.31],
-        'U_Value': [1.20, 0.72, 1.20, 0.72, 1.20, 0.72, 0.58, 0.72]
+        'U_Value': [1.20, 0.72, 1.20, 0.72, 1.20, 0.72, 0.58, 0.72],
+        'Ancho_in': [51.25, 51.25, 51.25, 51.25, 52.25, 52.25, 52.25, 52.25],
+        'Largo_in': [51.25, 51.25, 87.25, 87.25, 100.25, 100.25, 100.25, 100.25]
     }
     df = pd.DataFrame(data)
     df['Ancho_m'] = (df['Ancho_in'] * 0.0254).round(3)
@@ -57,203 +55,139 @@ def cargar_catalogo():
 df_domos = cargar_catalogo()
 
 # ==========================================
-# 3. MOTOR CLIMÁTICO AVANZADO (NASA POWER)
+# 3. MOTOR NASA (CORREGIDO)
 # ==========================================
 @st.cache_data
-def obtener_clima_detallado_nasa(lat, lon):
-    """Extrae componentes de luz y temperatura de la NASA para cualquier coordenada."""
-    # Eliminamos CLD_OT que causaba el error 422
-    parametros = "ALLSKY_SFC_SW_DWN,T2M"
-    
-    # Formato de fechas YYYYMMDD (8 dígitos)
-    url = (
-        f"https://power.larc.nasa.gov/api/temporal/hourly/point?"
-        f"parameters={parametros}&community=RE&longitude={lon}&latitude={lat}"
-        f"&start=20230101&end=20231231&format=JSON"
-    )
-    
+def obtener_clima_nasa(lat, lon):
+    url = (f"https://power.larc.nasa.gov/api/temporal/hourly/point?"
+           f"parameters=ALLSKY_SFC_SW_DWN,T2M&community=RE&longitude={lon}&latitude={lat}"
+           f"&start=20230101&end=20231231&format=JSON")
     try:
         r = requests.get(url, timeout=15)
         if r.status_code == 200:
             data = r.json()['properties']['parameter']
-            ghi = np.array(list(data['ALLSKY_SFC_SW_DWN'].values()))
-            temp = np.array(list(data['T2M'].values()))
-            
-            # Como quitamos CLD_OT, vamos a estimar la nubosidad inversamente 
-            # proporcional a la irradiancia para no romper los gráficos de la App
-            # Si GHI es alto, nubes es bajo.
-            nubes_estimadas = np.clip(100 - (ghi / 10), 0, 100)
-            
-            return {
-                "lux": ghi[:8760] * 115,
-                "nubes": nubes_estimadas[:8760],
-                "temp": temp[:8760]
-            }
-        else:
-            return None
-    except Exception as e:
-        st.error(f"Error de conexión NASA: {e}")
-        return None
+            ghi = np.array(list(data['ALLSKY_SFC_SW_DWN'].values()))[:8760]
+            temp = np.array(list(data['T2M'].values()))[:8760]
+            return {"lux": ghi * 115, "temp": temp, "ghi": ghi}
+    except: return None
 
 # ==========================================
-# 4. SIDEBAR: INPUTS
+# 4. SIDEBAR INPUTS
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 1. Geometría de la Nave")
-    ancho = st.number_input("Ancho (m)", min_value=10.0, max_value=200.0, value=30.0)
-    largo = st.number_input("Largo (m)", min_value=10.0, max_value=200.0, value=50.0)
-    alto = st.number_input("Altura Libre (m)", min_value=3.0, max_value=25.0, value=8.0)
+    st.header("⚙️ 1. Geometría")
+    ancho = st.number_input("Ancho (m)", 10.0, 200.0, 30.0)
+    largo = st.number_input("Largo (m)", 10.0, 200.0, 50.0)
+    alto = st.number_input("Altura Libre (m)", 3.0, 25.0, 8.0)
     
-    st.header("☀️ 2. Configuración Sunoptics")
-    modelo_seleccionado = st.selectbox("Modelo NFRC", df_domos['Modelo'])
+    st.header("☀️ 2. Sunoptics")
+    modelo_sel = st.selectbox("Modelo NFRC", df_domos['Modelo'])
     sfr_target = st.slider("Objetivo SFR (%)", 1.0, 10.0, 4.0, 0.1) / 100.0
-    datos_domo = df_domos[df_domos['Modelo'] == modelo_seleccionado].iloc[0]
-    
-    st.info(f"**VLT:** {datos_domo['VLT']} | **SHGC:** {datos_domo['SHGC']}")
+    datos_domo = df_domos[df_domos['Modelo'] == modelo_sel].iloc[0]
+    st.info(f"VLT: {datos_domo['VLT']} | SHGC: {datos_domo['SHGC']}")
 
-    st.header("📚 3. Normativa")
-    uso_edificio = st.selectbox("Uso (ASHRAE 90.1)", ["Warehouse", "Manufacturing", "Retail"])
-    material_techo = st.selectbox("Material de Cubierta", ["Membrane", "Metal Deck", "Concrete"])
+# Lógica de Horario Industrial (ASHRAE)
+horario_uso = np.zeros(8760)
+for d in range(365): 
+    if d % 7 < 6: 
+        for h in range(8, 18): horario_uso[(d * 24) + h] = 1.0
 
-area_nave = ancho * largo
-
-# ==========================================
-# 5. LÓGICA DE CÁLCULO (MOTORES FÍSICOS)
-# ==========================================
-def calcular_cu(w, l, h):
-    rcr = (5 * h * (w + l)) / (w * l)
-    return 0.85 * (math.exp(-0.12 * rcr))
-
-cu_proyecto = calcular_cu(ancho, largo, alto)
-
-def generar_horario_ashrae():
-    matriz = np.zeros(8760)
-    for dia in range(365):
-        if dia % 7 < 6: # Lunes a Sábado
-            for hora in range(8, 18): matriz[(dia * 24) + hora] = 1.0
-    return matriz
-
-horario_uso = generar_horario_ashrae()
-horas_laborales = np.sum(horario_uso)
-
-# Inicializar estado del clima
-if 'clima_data' not in st.session_state:
-    st.session_state['clima_data'] = None
+if 'clima_data' not in st.session_state: st.session_state['clima_data'] = None
 
 # ==========================================
-# 6. INTERFAZ PRINCIPAL (TABS)
+# 5. TABS INTERFAZ
 # ==========================================
-tab_geo, tab_3d, tab_analitica = st.tabs(["📍 Contexto Climático", "📐 Distribución Geométrica", "📊 Análisis Energético"])
+tab_geo, tab_3d, tab_analitica = st.tabs(["📍 Clima", "📐 Geometría", "📊 Análisis Energético"])
 
 with tab_geo:
-    st.subheader("Buscador Satelital de Irradiancia y Nubosidad")
-    
-    # Validación segura de datos recibidos
-    if st.session_state['clima_data'] is not None:
-        st.success(f"✅ Conexión exitosa: {len(st.session_state['clima_data']['lux'])} registros recibidos.")
-    else:
-        st.info("💡 Por favor, haz clic en un punto del mapa para obtener los datos de la NASA.")
-
+    st.subheader("Buscador Satelital de Datos")
     col_mapa, col_datos = st.columns([2, 1])
-    
     with col_mapa:
-        m = folium.Map(location=[9.933, -84.083], zoom_start=5) 
+        m = folium.Map(location=[15.0, -90.0], zoom_start=5)
         m.add_child(folium.LatLngPopup())
-        map_data = st_folium(m, height=400, width=700, key="mapa_proyecto")
+        map_data = st_folium(m, height=400, width=700, key="mapa_v2")
     
     with col_datos:
         if map_data and map_data['last_clicked']:
             lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
-            st.success(f"**Punto:** {lat:.3f}, {lon:.3f}")
-            
-            if st.button("Descargar Clima NASA"):
-                with st.spinner("Conectando con satélite..."):
-                    st.session_state['clima_data'] = obtener_clima_detallado_nasa(lat, lon)
+            st.write(f"📍 **Lat:** {lat:.3f} | **Lon:** {lon:.3f}")
+            if st.button("Descargar Datos NASA"):
+                with st.spinner("Bajando registros 2023..."):
+                    st.session_state['clima_data'] = obtener_clima_nasa(lat, lon)
                     st.rerun()
-            
-            if st.session_state['clima_data'] is not None:
-                if LADYBUG_READY:
-                    loc = Location("Proyecto", latitude=lat, longitude=lon, time_zone=0)
-                    sp = Sunpath.from_location(loc)
-                    sol = sp.calculate_sun(month=6, day=21, hour=12)
-                    st.metric("Altitud Solar (Zenit)", f"{round(sol.altitude, 2)}°")
-        else:
-            st.warning("👈 Haz clic en el mapa para cargar el clima real.")
-
-    if st.session_state['clima_data'] is not None:
-        df_c = pd.DataFrame({
-            'Mes': pd.date_range("2023-01-01", periods=8760, freq="h").month,
-            'Nubes': st.session_state['clima_data']['nubes']
-        }).groupby('Mes').mean()
-        
-        fig_n = px.bar(df_c, y='Nubes', title="Índice de Nubosidad Mensual (Satelital)", 
-                       labels={'Nubes':'Grosor Óptico'}, color_discrete_sequence=['#95a5a6'])
-        st.plotly_chart(fig_n, use_container_width=True)
+        else: st.info("👈 Haz clic en el mapa.")
 
 with tab_3d:
-    st.subheader("Distribución Matricial Sunoptics")
-    col_plot, col_info = st.columns([2, 1])
+    # Plano 2D (Distribución simétrica S/2)
+    num_domos = max(1, math.ceil((ancho * largo * sfr_target) / (datos_domo['Ancho_m'] * datos_domo['Largo_m'])))
+    cols = max(1, round((num_domos * (ancho/largo))**0.5))
+    filas = max(1, math.ceil(num_domos / cols))
     
-    area_un_domo = datos_domo['Ancho_m'] * datos_domo['Largo_m']
-    num_domos_teorico = (area_nave * sfr_target) / area_un_domo
-    cols = max(1, round((num_domos_teorico * (ancho/largo))**0.5))
-    filas = max(1, math.ceil(num_domos_teorico / cols))
-    total_domos = cols * filas
-
-    with col_plot:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.add_patch(plt.Rectangle((0, 0), ancho, largo, color='none', ec='black', lw=2))
-        sp_x, sp_y = ancho / cols, largo / filas
-        for i in range(cols):
-            for j in range(filas):
-                cx, cy = (i * sp_x) + (sp_x/2), (j * sp_y) + (sp_y/2)
-                ax.add_patch(plt.Rectangle((cx-datos_domo['Ancho_m']/2, cy-datos_domo['Largo_m']/2), 
-                                           datos_domo['Ancho_m'], datos_domo['Largo_m'], color='#00aaff', alpha=0.6))
-        plt.axis('equal')
-        st.pyplot(fig)
-    
-    with col_info:
-        st.metric("Total Domos", f"{total_domos} und")
-        st.write(f"Distanciamiento: {sp_x:.2f}m x {sp_y:.2f}m")
+    fig_mat, ax = plt.subplots(figsize=(8, 5))
+    ax.add_patch(plt.Rectangle((0, 0), ancho, largo, color='white', ec='black', lw=2))
+    dx, dy = ancho / cols, largo / filas
+    for i in range(cols):
+        for j in range(filas):
+            ax.add_patch(plt.Rectangle(((i*dx)+(dx/2)-datos_domo['Ancho_m']/2, (j*dy)+(dy/2)-datos_domo['Largo_m']/2), 
+                                       datos_domo['Ancho_m'], datos_domo['Largo_m'], color='#3498DB', alpha=0.7))
+    plt.axis('equal')
+    st.pyplot(fig_mat)
 
 with tab_analitica:
     if st.session_state['clima_data'] is not None:
-        lux_anual = st.session_state['clima_data']['lux']
-        temp_anual = st.session_state['clima_data']['temp']
-
-        e_in = lux_anual * sfr_target * (0.85 * 0.9 * datos_domo['VLT']) * cu_proyecto
-        potencia_w_m2 = 8.0 
-        potencia_total_kw = (area_nave * potencia_w_m2) / 1000.0
+        lux = st.session_state['clima_data']['lux']
+        temp = st.session_state['clima_data']['temp']
         
-        consumo_base = potencia_total_kw * horario_uso
-        luz_faltante = np.clip(300 - e_in, 0, 300)
-        consumo_proyecto = (luz_faltante / 300) * potencia_total_kw * horario_uso
+        # --- CÁLCULOS SKYCALC ---
+        cu = 0.85 * (math.exp(-0.12 * ((5 * alto * (ancho + largo)) / (ancho * largo))))
+        e_in = lux * sfr_target * 0.85 * 0.9 * datos_domo['VLT'] * cu
+        pot_kw = (ancho * largo * 8.0) / 1000.0
+        c_base = pot_kw * horario_uso
+        c_proy = (np.clip(300 - e_in, 0, 300) / 300) * pot_kw * horario_uso
         
-        sda_pct = (np.sum((e_in >= 300) & (horario_uso == 1.0)) / horas_laborales) * 100
-
+        # --- VISUALES RESTAURADAS (DASHBOARD) ---
+        st.subheader("Reporte Preliminar de Eficiencia Energética")
         c1, c2 = st.columns(2)
         with c1:
-            st.plotly_chart(px.bar(x=['Base', 'Proyecto'], y=[np.sum(consumo_base), np.sum(consumo_proyecto)], 
-                                   title="Consumo Eléctrico Anual (kWh)", color=['#e74c3c', '#2ecc71']), use_container_width=True)
-        with c2:
-            st.metric("Autonomía Lumínica (sDA)", f"{sda_pct:.1f}%")
+            fig_bar = go.Figure(data=[
+                go.Bar(name='Sin Domos', x=['Consumo'], y=[np.sum(c_base)], marker_color='#E74C3C', text=[f"{np.sum(c_base):,.0f} kWh"], textposition='auto'),
+                go.Bar(name='Con Sunoptics', x=['Consumo'], y=[np.sum(c_proy)], marker_color='#2ECC71', text=[f"{np.sum(c_proy):,.0f} kWh"], textposition='auto')
+            ])
+            fig_bar.update_layout(title="Comparativa de Consumo (kWh/año)", height=400, barmode='group', template="plotly_white")
+            st.plotly_chart(fig_bar, use_container_width=True)
             
-        st.markdown("### Análisis de Sensibilidad Energética (Neto)")
+        with c2:
+            sda = (np.sum((e_in >= 300) & (horario_uso == 1.0)) / np.sum(horario_uso)) * 100
+            fig_sda = go.Figure(go.Indicator(
+                mode="gauge+number", value=sda, title={'text': "Autonomía Lumínica (sDA)"},
+                number={'suffix': "%"},
+                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#3498DB"},
+                       'steps': [{'range': [75, 100], 'color': "#A9DFBF"}]}
+            ))
+            fig_sda.update_layout(height=400, template="plotly_white")
+            st.plotly_chart(fig_sda, use_container_width=True)
+
+        # --- CURVA DE OPTIMIZACIÓN CON TOOLTIPS AGRUPADOS ---
+        st.markdown("### Análisis de Optimización Energética (Flujo Dividido)")
         sfr_range = np.linspace(0.01, 0.10, 10)
-        neto = []
-        for s in sfr_range:
-            ahorro_l = np.sum(consumo_base) - np.sum((np.clip(300 - (lux_anual * s * 0.5 * cu_proyecto), 0, 300)/300) * potencia_total_kw * horario_uso)
-            carga_hvac = np.sum(np.where(temp_anual > 24, (lux_anual/110 * area_nave * s * datos_domo['SHGC'])/3000, 0))
-            neto.append(ahorro_l - carga_hvac)
+        ahorros, cargas_hvac, netos = [], [], []
         
-        fig_opt = px.line(x=sfr_range*100, y=neto, title="Punto Óptimo de Ahorro Neto", labels={'x':'SFR %', 'y':'kWh Ahorrados'})
+        for s in sfr_range:
+            e_t = lux * s * 0.7 * cu
+            c_t = (np.clip(300 - e_t, 0, 300) / 300) * pot_kw * horario_uso
+            ah_luz = np.sum(c_base) - np.sum(c_t)
+            ahorros.append(ah_luz)
+            # Impacto HVAC simplificado
+            penal_h = np.sum(np.where(temp > 24, (st.session_state['clima_data']['ghi'] * (ancho*largo*s) * datos_domo['SHGC'])/3000, 0))
+            cargas_hvac.append(-penal_h)
+            netos.append(ah_luz - penal_h)
+
+        fig_opt = go.Figure()
+        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=ahorros, name='Ahorro Luz', line=dict(color='#3498db', dash='dash'), hovertemplate='%{y:,.0f} kWh<extra></extra>'))
+        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=cargas_hvac, name='Impacto HVAC', line=dict(color='#e74c3c'), hovertemplate='%{y:,.0f} kWh<extra></extra>'))
+        fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=netos, name='<b>NETO TOTAL</b>', line=dict(color='#2ecc71', width=4), hovertemplate='<b>%{y:,.0f} kWh</b><extra></extra>'))
+        
+        fig_opt.update_layout(xaxis_title="SFR %", yaxis_title="Energía (kWh)", hovermode="x unified", template="plotly_white", height=500)
         st.plotly_chart(fig_opt, use_container_width=True)
     else:
-        st.warning("⚠️ Selecciona una ubicación en el mapa primero.")
-
-st.divider()
-with st.expander("📄 Solicitar Informe de Ingeniería"):
-    with st.form("contact"):
-        st.text_input("Nombre")
-        st.text_input("Correo")
-        if st.form_submit_button("Enviar"): st.success("Enviado")
+        st.warning("⚠️ Selecciona una ubicación en la pestaña Clima primero.")
