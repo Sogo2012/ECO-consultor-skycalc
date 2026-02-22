@@ -61,28 +61,38 @@ df_domos = cargar_catalogo()
 # ==========================================
 @st.cache_data
 def obtener_clima_detallado_nasa(lat, lon):
-    """Extrae componentes de luz y nubes de la NASA para cualquier coordenada."""
-    parametros = "ALLSKY_SFC_SW_DWN,DIFF,ALLSKY_SFC_SW_DNI,CLD_OT,T2M"
+    """Extrae componentes de luz y temperatura de la NASA para cualquier coordenada."""
+    # Eliminamos CLD_OT que causaba el error 422
+    parametros = "ALLSKY_SFC_SW_DWN,T2M"
+    
+    # Formato de fechas YYYYMMDD (8 dígitos)
     url = (
         f"https://power.larc.nasa.gov/api/temporal/hourly/point?"
         f"parameters={parametros}&community=RE&longitude={lon}&latitude={lat}"
         f"&start=20230101&end=20231231&format=JSON"
     )
+    
     try:
         r = requests.get(url, timeout=15)
-        data = r.json()['properties']['parameter']
-        ghi = np.array(list(data['ALLSKY_SFC_SW_DWN'].values()))
-        difusa = np.array(list(data['DIFF'].values()))
-        nubes = np.array(list(data['CLD_OT'].values()))
-        temp = np.array(list(data['T2M'].values()))
-        # Conversión científica a LUX (Eficacia lumínica global ~115)
-        return {
-            "lux": ghi[:8760] * 115,
-            "difusa": difusa[:8760] * 115,
-            "nubes": nubes[:8760],
-            "temp": temp[:8760]
-        }
-    except:
+        if r.status_code == 200:
+            data = r.json()['properties']['parameter']
+            ghi = np.array(list(data['ALLSKY_SFC_SW_DWN'].values()))
+            temp = np.array(list(data['T2M'].values()))
+            
+            # Como quitamos CLD_OT, vamos a estimar la nubosidad inversamente 
+            # proporcional a la irradiancia para no romper los gráficos de la App
+            # Si GHI es alto, nubes es bajo.
+            nubes_estimadas = np.clip(100 - (ghi / 10), 0, 100)
+            
+            return {
+                "lux": ghi[:8760] * 115,
+                "nubes": nubes_estimadas[:8760],
+                "temp": temp[:8760]
+            }
+        else:
+            return None
+    except Exception as e:
+        st.error(f"Error de conexión NASA: {e}")
         return None
 
 # ==========================================
