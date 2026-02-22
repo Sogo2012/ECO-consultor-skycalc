@@ -93,24 +93,29 @@ with st.sidebar:
     uso_edificio = st.selectbox("Uso", list(mapa_programas.keys()))
     material_techo = st.selectbox("Cubierta", list(mapa_materiales.keys()))
 
-# Extracción dinámica LBT
+# --- LOGICA DE EXTRACCIÓN LBT SENSIBILIZADA ---
 try:
     from honeybee_energy.lib.programtypes import program_type_by_identifier
     from honeybee_energy.lib.materials import opaque_material_by_identifier
+    
+    # Buscamos el programa ASHRAE real
     prog = program_type_by_identifier(mapa_programas[uso_edificio])
-    lpd_real = prog.lighting.watts_per_area
+    lpd_real = prog.lighting.watts_per_area  # W/m2 dinámico
+    
+    # Buscamos el material de la cubierta
     mat = opaque_material_by_identifier(mapa_materiales[material_techo])
-    u_techo_real = 1 / ((mat.thickness / mat.conductivity) + 0.15)
-except:
+    
+    # Cálculo físico del U-Value del techo basado en Honeybee
+    # R_total = R_conduccion + R_superficial_interior + R_superficial_exterior
+    # Usamos 0.15 como estándar de resistencias superficiales (ASHRAE)
+    u_techo_real = 1 / ((mat.thickness / mat.conductivity) + 0.15) 
+    
+except Exception as e:
+    # Si falla la búsqueda, el modelo te avisará en lugar de usar un dato ciego
     lpd_real, u_techo_real = 8.0, 0.5
+    st.sidebar.warning(f"Usando valores estándar. Error LBT: {e}")
 
-st.sidebar.info(f"**ASHRAE:**\nLPD: {lpd_real} W/m²\nU-Roof: {u_techo_real:.3f} W/m²K")
-
-# Horario industrial
-horario_uso = np.zeros(8760)
-for d in range(365): 
-    if d % 7 < 6: 
-        for h in range(8, 18): horario_uso[(d * 24) + h] = 1.0
+st.sidebar.info(f"**Propiedades Físicas:**\nLPD: {lpd_real} W/m²\nU-Roof: {u_techo_real:.3f} W/m²K")
 
 # ==========================================
 # 5. TABS INTERFAZ
