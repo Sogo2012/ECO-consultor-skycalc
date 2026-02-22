@@ -41,9 +41,13 @@ def cargar_catalogo():
             'Signature 800MD 4080 SGZ', 'Signature 800MD 4080 DGZ',
             'Signature 900SC 4080 (Storm)', 'Smoke Vent SVT2 4080 DGZ'
         ],
+        'Acristalamiento': ['Sencillo (SGZ)', 'Doble (DGZ)', 'Sencillo (SGZ)', 'Doble (DGZ)', 
+                            'Sencillo (SGZ)', 'Doble (DGZ)', 'Storm Class', 'Doble (DGZ)'],
         'VLT': [0.74, 0.67, 0.74, 0.67, 0.74, 0.67, 0.52, 0.64],
         'SHGC': [0.68, 0.48, 0.68, 0.48, 0.68, 0.48, 0.24, 0.31],
-        'U_Value': [1.20, 0.72, 1.20, 0.72, 1.20, 0.72, 0.58, 0.72],
+        # SENSIBILIZACIÓN: SGZ (Sencillo) sube a 5.5 W/m2K (policarbonato 6mm)
+        # DGZ (Doble) se queda en 2.8 - 3.2 aprox.
+        'U_Value': [5.50, 3.20, 5.50, 3.20, 5.50, 3.20, 2.50, 3.20],
         'Ancho_in': [51.25, 51.25, 51.25, 51.25, 52.25, 52.25, 52.25, 52.25],
         'Largo_in': [51.25, 51.25, 87.25, 87.25, 100.25, 100.25, 100.25, 100.25]
     }
@@ -51,8 +55,6 @@ def cargar_catalogo():
     df['Ancho_m'] = (df['Ancho_in'] * 0.0254).round(3)
     df['Largo_m'] = (df['Largo_in'] * 0.0254).round(3)
     return df
-
-df_domos = cargar_catalogo()
 
 # ==========================================
 # 3. MOTOR NASA (CORREGIDO)
@@ -72,7 +74,7 @@ def obtener_clima_nasa(lat, lon):
     except: return None
 
 # ==========================================
-# 4. SIDEBAR INPUTS
+# 4. SIDEBAR: INPUTS Y NORMATIVAS ASHRAE
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 1. Geometría")
@@ -84,15 +86,41 @@ with st.sidebar:
     modelo_sel = st.selectbox("Modelo NFRC", df_domos['Modelo'])
     sfr_target = st.slider("Objetivo SFR (%)", 1.0, 10.0, 4.0, 0.1) / 100.0
     datos_domo = df_domos[df_domos['Modelo'] == modelo_sel].iloc[0]
-    st.info(f"VLT: {datos_domo['VLT']} | SHGC: {datos_domo['SHGC']}")
 
-# Lógica de Horario Industrial (ASHRAE)
-horario_uso = np.zeros(8760)
-for d in range(365): 
-    if d % 7 < 6: 
-        for h in range(8, 18): horario_uso[(d * 24) + h] = 1.0
+    st.header("📚 3. Configuración de Nave (ASHRAE)")
+    # Mapeo de nombres UI a identificadores Honeybee
+    mapa_programas = {
+        "Warehouse": "NonRes Warehouse Conditioned",
+        "Manufacturing": "NonRes Factory High-Bay",
+        "Retail": "NonRes Retail"
+    }
+    mapa_materiales = {
+        "Generic Roof Membrane": "Generic Roof Membrane",
+        "Metal Deck": "Generic Metal Roof",
+        "Concrete": "Generic 8in Concrete"
+    }
+    
+    uso_edificio = st.selectbox("Uso del Edificio", list(mapa_programas.keys()))
+    material_techo = st.selectbox("Material de Cubierta", list(mapa_materiales.keys()))
 
-if 'clima_data' not in st.session_state: st.session_state['clima_data'] = None
+# --- LOGICA DE EXTRACCIÓN LBT (Fuera del Sidebar) ---
+# Intentamos extraer datos reales de la librería Honeybee
+try:
+    from honeybee_energy.lib.programtypes import program_type_by_identifier
+    from honeybee_energy.lib.materials import opaque_material_by_identifier
+    
+    prog = program_type_by_identifier(mapa_programas[uso_edificio])
+    lpd_real = prog.lighting.watts_per_area  # W/m2 real de ASHRAE
+    
+    mat = opaque_material_by_identifier(mapa_materiales[material_techo])
+    # Calculamos U-Value del techo (R = espesor / conductividad + resistencias superficiales)
+    u_techo_real = 1 / ((mat.thickness / mat.conductivity) + 0.15) 
+except:
+    # Fallback si LBT no carga en el servidor
+    lpd_real = 8.0 
+    u_techo_real = 0.5
+
+st.sidebar.info(f"**ASHRAE Detectado:**\nLPD: {lpd_real} W/m²\nU-Roof: {u_techo_real:.3f} W/m²K")
 
 # ==========================================
 # 5. TABS INTERFAZ
@@ -172,15 +200,42 @@ with tab_analitica:
         sfr_range = np.linspace(0.01, 0.10, 10)
         ahorros, cargas_hvac, netos = [], [], []
         
+# --- MOTOR DE CÁLCULO SENSIBILIZADO (SKYCALC LOGIC) ---
+        st.markdown("### Análisis de Optimización Energética (Flujo Dividido)")
+        sfr_range = np.linspace(0.01, 0.10, 10)
+        ahorros, cargas_hvac, netos = [], [], []
+        
+        # Potencia total instalada según ASHRAE para esta nave
+        pot_total_kw = (ancho * largo * lpd_real) / 1000.0
+        cop_sistema = 3.0 # Eficiencia promedio del AC
+
         for s in sfr_range:
-            e_t = lux * s * 0.7 * cu
-            c_t = (np.clip(300 - e_t, 0, 300) / 300) * pot_kw * horario_uso
-            ah_luz = np.sum(c_base) - np.sum(c_t)
-            ahorros.append(ah_luz)
-            # Impacto HVAC simplificado
-            penal_h = np.sum(np.where(temp > 24, (st.session_state['clima_data']['ghi'] * (ancho*largo*s) * datos_domo['SHGC'])/3000, 0))
+            # 1. AHORRO LUMÍNICO
+            e_t = lux * s * 0.75 * cu # 0.75 es factor de mantenimiento
+            c_t = (np.clip(300 - e_t, 0, 300) / 300) * pot_total_kw * horario_uso
+            ah_luz_hora = (pot_total_kw * horario_uso) - c_t
+            ah_luz_anual = np.sum(ah_luz_hora)
+            
+            # 2. IMPACTO TÉRMICO (Sensibilizado)
+            # A) Ganancia Solar (SHGC)
+            q_solar = (st.session_state['clima_data']['ghi'] * (ancho * largo * s) * datos_domo['SHGC'])
+            
+            # B) Conducción (U-Value Domo vs U-Value Techo)
+            # Delta U: El calor entra por el domo pero deja de entrar por el área de techo que quitamos
+            q_cond = (ancho * largo * s) * (datos_domo['U_Value'] - u_techo_real) * (temp - 22.0)
+            
+            # C) Crédito térmico de luces (Calor evitado por apagar lámparas)
+            q_luces_evitado = ah_luz_hora * 1000 # de kW a Watts
+            
+            # CARGA NETA: Lo que el aire acondicionado debe "sacar" adicionalmente
+            carga_neta_w = q_solar + q_cond - q_luces_evitado
+            
+            # Penalización HVAC: Solo cuando hace calor (>24°C)
+            penal_h = np.sum(np.where(temp > 24, carga_neta_w / (cop_sistema * 1000), 0))
+            
+            ahorros.append(ah_luz_anual)
             cargas_hvac.append(-penal_h)
-            netos.append(ah_luz - penal_h)
+            netos.append(ah_luz_anual - penal_h)
 
         fig_opt = go.Figure()
         fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=ahorros, name='Ahorro Luz', line=dict(color='#3498db', dash='dash'), hovertemplate='%{y:,.0f} kWh<extra></extra>'))
