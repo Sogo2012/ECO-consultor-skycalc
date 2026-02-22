@@ -218,7 +218,7 @@ with tab_analitica:
         fig_gauge.update_layout(height=350)
         st.plotly_chart(fig_gauge, use_container_width=True)
 
-   # 3. CURVA TÉRMICA (HVAC)
+  # 3. CURVA TÉRMICA (HVAC)
     st.markdown("### Curva de Optimización Energética (Flujo Dividido)")
     sfr_range = np.linspace(0.01, 0.10, 10)
     ahorros, hvac_penalties = [], []
@@ -231,8 +231,7 @@ with tab_analitica:
         ahorro_luz_total = np.sum(consumo_base) - np.sum(c_temp)
         ahorros.append(ahorro_luz_total)
         
-        # --- AQUÍ ESTABA EL ERROR VECTORIAL ---
-        # El calor de luces removido debe calcularse HORA POR HORA, no con el total anual
+        # El calor de luces removido debe calcularse HORA POR HORA
         calor_luces_removido_kw_horario = consumo_base - c_temp
         
         # Cargas térmicas horarias (Ganancia Solar + Conducción)
@@ -242,15 +241,43 @@ with tab_analitica:
         # Carga neta horaria real
         carga_neta = q_solar + conduccion - calor_luces_removido_kw_horario
         
-        # Penalización HVAC (Solo suma cuando la temp exterior es mayor a 24°C)
+        # Penalización HVAC
         penalizacion = -np.sum(np.where(temp_anual > 24.0, carga_neta/3.0, 0))
         hvac_penalties.append(penalizacion)
 
+    # --- CREACIÓN DEL GRÁFICO CON ETIQUETAS EXACTAS DE COLAB ---
     fig_curve = go.Figure()
-    fig_curve.add_trace(go.Scatter(x=sfr_range*100, y=ahorros, name='Ahorro Luz', line=dict(dash='dash', color='#3498db')))
-    fig_curve.add_trace(go.Scatter(x=sfr_range*100, y=hvac_penalties, name='Carga HVAC', line=dict(color='#e74c3c')))
-    fig_curve.add_trace(go.Scatter(x=sfr_range*100, y=np.array(ahorros)+np.array(hvac_penalties), name='Ahorro Neto', line=dict(color='#2ecc71', width=4)))
-    fig_curve.update_layout(xaxis_title="Relación de Tragaluces (SFR %)", yaxis_title="Energía (kWh)", height=400)
+    
+    fig_curve.add_trace(go.Scatter(
+        x=sfr_range*100, y=ahorros, 
+        name='Ahorro Iluminación', 
+        line=dict(color='#3498db', width=2, dash='dash'),
+        hovertemplate='Ahorro Luz: %{y:,.0f} kWh<extra></extra>'
+    ))
+    
+    fig_curve.add_trace(go.Scatter(
+        x=sfr_range*100, y=hvac_penalties, 
+        name='Impacto HVAC', 
+        line=dict(color='#e74c3c', width=2),
+        hovertemplate='Carga HVAC: %{y:,.0f} kWh<extra></extra>'
+    ))
+    
+    fig_curve.add_trace(go.Scatter(
+        x=sfr_range*100, y=np.array(ahorros)+np.array(hvac_penalties), 
+        name='<b>AHORRO NETO TOTAL</b>', 
+        line=dict(color='#2ecc71', width=5),
+        hovertemplate='<b>Neto: %{y:,.0f} kWh</b><extra></extra>'
+    ))
+
+    fig_curve.update_layout(
+        xaxis=dict(title="Relación de Tragaluces (SFR %)", dtick=1),
+        yaxis=dict(title="Energía Anual (kWh/año)", tickformat=","),
+        height=400,
+        template="plotly_white", 
+        hovermode="x unified", # ESTO ES LO QUE AGRUPA LAS ETIQUETAS
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    )
+    
     st.plotly_chart(fig_curve, use_container_width=True)
 
     # 4. HEATMAP
