@@ -9,6 +9,8 @@ import folium
 from streamlit_folium import st_folium
 import datetime
 import requests
+import os
+from weather_utils import obtener_estaciones_cercanas, descargar_y_extraer_epw
 
 # --- 1. CONFIGURACIÓN INICIAL (VITAL PARA EVITAR ERRORES) ---
 st.set_page_config(page_title="SkyCalc 2.0 | Eco Consultor", layout="wide")
@@ -21,6 +23,7 @@ if 'clima_data' not in st.session_state:
 try:
     from ladybug.sunpath import Sunpath
     from ladybug.location import Location
+    from ladybug.epw import EPW
     LADYBUG_READY = True
 except ImportError:
     LADYBUG_READY = False
@@ -55,7 +58,7 @@ def cargar_catalogo():
 df_domos = cargar_catalogo()
 
 # ==========================================
-# 3. MOTOR NASA POWER API
+# 3. MOTOR NASA POWER API (Backup)
 # ==========================================
 @st.cache_data
 def obtener_clima_nasa(lat, lon):
@@ -69,7 +72,7 @@ def obtener_clima_nasa(lat, lon):
             data = r.json()['properties']['parameter']
             ghi = np.array(list(data['ALLSKY_SFC_SW_DWN'].values()))[:8760]
             temp = np.array(list(data['T2M'].values()))[:8760]
-            return {"lux": ghi * 115, "temp": temp, "ghi": ghi}
+            return {"lux": ghi * 115, "temp": temp, "ghi": ghi, "dni": ghi * 0.7, "dhi": ghi * 0.3} # Fallback simple
     except:
         return None
 
@@ -88,10 +91,7 @@ with st.sidebar:
     datos_domo = df_domos[df_domos['Modelo'] == modelo_sel].iloc[0]
 
     st.header("📚 3. Nave ASHRAE")
-    # LPD: Valores directos para evitar buscar la versión de ASHRAE anidada en LBT
     mapa_programas = {"Warehouse": 6.5, "Manufacturing": 12.0, "Retail": 16.0}
-    
-    # 🟢 ¡AQUÍ ESTÁN LOS MATERIALES EXACTOS QUE ENCONTRASTE EN COLAB! 🟢
     mapa_materiales = {
         "Membrana Genérica (Aislada)": "Generic Roof Membrane", 
         "Concreto Pesado": "Generic HW Concrete", 
@@ -101,22 +101,14 @@ with st.sidebar:
     uso_edificio = st.selectbox("Uso", list(mapa_programas.keys()))
     material_techo = st.selectbox("Cubierta", list(mapa_materiales.keys()))
 
-# --- LOGICA DE EXTRACCIÓN LBT (AHORA SÍ FUNCIONARÁ) ---
+# --- LOGICA DE EXTRACCIÓN LBT ---
 try:
     from honeybee_energy.lib.materials import opaque_material_by_identifier
-    
-    # 1. Asignamos LPD dinámicamente
     lpd_real = mapa_programas[uso_edificio]
-    
-    # 2. Extraemos la física REAL de la librería Honeybee
     nombre_material_lbt = mapa_materiales[material_techo]
     mat = opaque_material_by_identifier(nombre_material_lbt)
-    
-    # Cálculo físico: U = 1 / (R_conduccion + R_superficiales)
     u_techo_real = 1 / ((mat.thickness / mat.conductivity) + 0.15) 
-    
     st.sidebar.success(f"✅ Conectado a LBT\nLPD: {lpd_real} W/m²\nU-Roof: {u_techo_real:.3f} W/m²K")
-
 except Exception as e:
     lpd_real, u_techo_real = 8.0, 0.5
     st.sidebar.error(f"Error LBT: {e}")
@@ -126,6 +118,7 @@ horario_uso = np.zeros(8760)
 for d in range(365): 
     if d % 7 < 6: 
         for h in range(8, 18): horario_uso[(d * 24) + h] = 1.0
+
 # ==========================================
 # 5. TABS INTERFAZ
 # ==========================================
@@ -136,23 +129,81 @@ st.divider()
 tab_geo, tab_3d, tab_analitica = st.tabs(["📍 Clima", "📐 Geometría", "📊 Análisis Energético"])
 
 with tab_geo:
-    st.subheader("Buscador Satelital de Datos")
+    st.subheader("Buscador de Estaciones Climáticas (EPW)")
     col_mapa, col_datos = st.columns([2, 1])
+    
+    # Obtener ubicación actual del mapa o por defecto
+    centro_lat, centro_lon = 15.0, -90.0
+    if map_data := st.session_state.get('map_data_v3'):
+        if map_data.get('last_clicked'):
+            centro_lat, centro_lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
+
     with col_mapa:
-        m = folium.Map(location=[15.0, -90.0], zoom_start=5)
+        m = folium.Map(location=[centro_lat, centro_lon], zoom_start=5)
+        
+        # Mostrar estaciones en el mapa
+        df_estaciones = obtener_estaciones_cercanas(centro_lat, centro_lon, top_n=10)
+        for _, st_row in df_estaciones.iterrows():
+            folium.Marker(
+                location=st_row['location'],
+                popup=f"{st_row['name']} ({st_row['distancia_km']} km)",
+                icon=folium.Icon(color='blue', icon='info-sign')
+            ).add_to(m)
+            
         m.add_child(folium.LatLngPopup())
         map_data = st_folium(m, height=400, width=700, key="mapa_v3")
+        st.session_state['map_data_v3'] = map_data
     
     with col_datos:
         if map_data and map_data['last_clicked']:
             lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
-            st.write(f"📍 **Lat:** {lat:.3f} | **Lon:** {lon:.3f}")
-            if st.button("Descargar Datos NASA"):
-                with st.spinner("Conectando con satélites..."):
+            st.write(f"📍 **Proyecto:** {lat:.3f}, {lon:.3f}")
+            
+            st.markdown("---")
+            st.write("🛰️ **Estaciones más cercanas:**")
+            df_cercanas = obtener_estaciones_cercanas(lat, lon)
+            st.dataframe(df_cercanas[['name', 'distancia_km']], hide_index=True)
+            
+            mejor_estacion = df_cercanas.iloc[0]
+            if st.button(f"Usar estación: {mejor_estacion['name']}"):
+                with st.spinner(f"Descargando datos de {mejor_estacion['name']}..."):
+                    try:
+                        epw_path = descargar_y_extraer_epw(mejor_estacion['epw'])
+                        epw = EPW(epw_path)
+                        
+                        # Extraer vectores de 8760
+                        temp = np.array(epw.dry_bulb_temperature.values)
+                        ghi = np.array(epw.global_horizontal_radiation.values)
+                        dni = np.array(epw.direct_normal_radiation.values)
+                        dhi = np.array(epw.diffuse_horizontal_radiation.values)
+                        
+                        # Conversión aproximada de GHI a LUX (Eficacia luminosa promedio)
+                        # Ladybug tools suele usar modelos más complejos pero aquí simplificamos
+                        lux = ghi * 115 
+                        
+                        st.session_state['clima_data'] = {
+                            "lux": lux, 
+                            "temp": temp, 
+                            "ghi": ghi, 
+                            "dni": dni, 
+                            "dhi": dhi,
+                            "estacion": mejor_estacion['name'],
+                            "distancia": mejor_estacion['distancia_km']
+                        }
+                        st.success(f"✅ Datos cargados de {mejor_estacion['name']}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al procesar EPW: {e}")
+            
+            if st.button("Fallback: NASA POWER"):
+                with st.spinner("Conectando con satélites NASA..."):
                     st.session_state['clima_data'] = obtener_clima_nasa(lat, lon)
                     st.rerun()
         else:
-            st.info("👈 Haz clic en el mapa.")
+            st.info("👈 Haz clic en el mapa para localizar tu proyecto.")
+            
+        if st.session_state['clima_data']:
+            st.success(f"Clima activo: {st.session_state['clima_data'].get('estacion', 'NASA Satellite')}")
 
 with tab_3d:
     area_nave = ancho * largo
@@ -210,7 +261,7 @@ with tab_analitica:
             c_t = (np.clip(300 - e_t, 0, 300) / 300) * pot_total_kw * horario_uso
             ah_l = np.sum(c_base) - np.sum(c_t)
             
-            # CALOR (Sensibilización Domo vs Techo ASHRAE)
+            # CALOR
             q_solar = (ghi * (ancho * largo * s) * datos_domo['SHGC'])
             q_cond = (ancho * largo * s) * (datos_domo['U_Value'] - u_techo_real) * (temp - 22.0)
             q_luces_evitado = (pot_total_kw * horario_uso - c_t) * 1000 
