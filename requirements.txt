@@ -1,7 +1,9 @@
 streamlit
 pandas
 numpy
+matplotlib
 plotly
 folium
 streamlit-folium
+requests
 ladybug-core
