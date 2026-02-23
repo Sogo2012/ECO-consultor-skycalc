@@ -172,7 +172,7 @@ with tab_clima:
             if not df_viento.empty:
                 df_viento = df_viento[df_viento['vel'] > 0.5] 
                 
-                bins_dir = np.arange(-11.25, 371.25, 22.5)
+                bins_dir = np.arange(-11.25, 372.0, 22.5)
                 labels_dir = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW','N2']
                 df_viento['Dir_Cat'] = pd.cut(df_viento['dir'], bins=bins_dir, labels=labels_dir, right=False)
                 df_viento['Dir_Cat'] = df_viento['Dir_Cat'].replace('N2', 'N')
