@@ -2,12 +2,14 @@ import json
 import requests
 import os
 import zipfile
-import pandas as pd
+import urllib.request
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim, Photon
+import pandas as pd
 from ladybug.epw import EPW
 import shutil
 import tempfile
+from bs4 import BeautifulSoup
 import urllib.parse
 import random
 
@@ -18,49 +20,63 @@ try:
 except FileNotFoundError:
     ONEBUILDING_MAPPING = {}
 
-def get_country_from_coords(lat, lon):
-    """Obtiene el nombre del país en inglés a partir de coordenadas para asegurar el match."""
+def get_location_info(lat, lon):
+    """Retorna información de ubicación (país) usando geocoding inverso de Jules."""
+    # Intentar con Photon primero (El método exitoso de Jules)
     try:
-        # Usamos Nominatim forzando el idioma inglés para que coincida con OneBuilding
-        ua = f"skycalc_agent_{random.randint(1000, 9999)}"
-        geolocator = Nominatim(user_agent=ua)
-        location = geolocator.reverse(f"{lat}, {lon}", timeout=10, language='en')
-        if location and 'address' in location.raw:
-            return location.raw['address'].get('country', '')
+        geolocator = Photon(user_agent="skycalc_explorer_v5")
+        location = geolocator.reverse(f"{lat}, {lon}", timeout=10)
+        if location and 'properties' in location.raw:
+            return location.raw['properties'].get('country')
     except:
         pass
-    return ""
+
+    # Fallback a Nominatim forzando idioma inglés
+    try:
+        ua = f"skycalc_agent_{random.randint(1000, 9999)}"
+        geolocator = Nominatim(user_agent=ua)
+        location = geolocator.reverse(f"{lat}, {lon}", language='en')
+        if location and 'address' in location.raw:
+            return location.raw['address'].get('country')
+    except:
+        pass
+    return None
 
 def obtener_estaciones_cercanas(lat, lon, top_n=5):
-    """Raspa la web de OneBuilding y devuelve las estaciones más cercanas."""
-    country_name = get_country_from_coords(lat, lon)
-    if not country_name:
-        return pd.DataFrame() # No se pudo identificar el país
+    """Raspa la web de OneBuilding (Método Jules) y devuelve las estaciones."""
+    country = get_location_info(lat, lon)
+    if not country:
+        return pd.DataFrame()
 
     # 2. Búsqueda Inteligente del País en el JSON
-    target_url = None
-    country_clean = country_name.lower().replace(" ", "")
+    country_norm = "".join(e for e in country.lower() if e.isalnum())
     
+    target_url = None
     for key, url in ONEBUILDING_MAPPING.items():
-        key_clean = key.lower().replace("_", "").replace(".", "")
-        if country_clean in key_clean or key_clean in country_clean:
+        key_norm = "".join(e for e in key.lower() if e.isalnum())
+        if country_norm in key_norm or key_norm in country_norm:
             target_url = url
             break
             
     if not target_url:
-        return pd.DataFrame() # El país no está en la base de datos
+        return pd.DataFrame()
 
-    # 3. Web Scraping de la tabla de estaciones
+    # 3. Web Scraping de la tabla (EL SECRETO DE JULES PARA NO SER BLOQUEADO)
     try:
         base_url = target_url.rsplit('/', 1)[0] + '/'
         
-        # Leemos todas las tablas HTML de la página
-        dfs = pd.read_html(target_url)
-        if not dfs: return pd.DataFrame()
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(target_url, headers=headers, timeout=15)
+        response.raise_for_status()
         
-        df_stations = dfs[0] # Generalmente la primera tabla tiene los datos
+        soup = BeautifulSoup(response.content, 'html.parser')
+        table = soup.find('table')
+        if not table:
+            return pd.DataFrame()
+            
+        df_stations = pd.read_html(str(table))[0]
         
-        # Limpiar la tabla (OneBuilding usa columnas como 'Station', 'Lat', 'Lon', 'Elev', 'ZIP')
+        # Limpiar la tabla
         columnas_validas = [col for col in df_stations.columns if 'Lat' in col or 'Lon' in col or 'Station' in col or 'ZIP' in col]
         if not columnas_validas: return pd.DataFrame()
         
@@ -76,10 +92,9 @@ def obtener_estaciones_cercanas(lat, lon, top_n=5):
         df_stations['distancia_km'] = df_stations.apply(calc_distance, axis=1)
         df_stations = df_stations.sort_values('distancia_km').head(top_n)
         
-        # 5. Formatear salida para evitar KeyErrors
+        # 5. Formatear salida para la web (Blindaje de Errores)
         resultados = []
         for _, row in df_stations.iterrows():
-            # Construir URL del ZIP
             zip_name = str(row.get('ZIP', '')).strip()
             if zip_name and zip_name.endswith('.zip'):
                 full_zip_url = urllib.parse.urljoin(base_url, zip_name)
