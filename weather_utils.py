@@ -82,7 +82,19 @@ def obtener_estaciones_cercanas(lat, lon, top_n=5):
     country_url = None
     # Normalización simple para evitar problemas con acentos
     def normalize(text):
-        return text.lower().replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
+        res = text.lower().replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
+        # Mapeos comunes de nombres de países
+        mappings = {
+            "espana": "spain",
+            "mexico": "mexico",
+            "estados unidos": "usa",
+            "united states": "usa",
+            "brasil": "brazil"
+        }
+        for k, v in mappings.items():
+            if k in res:
+                return v
+        return res
 
     norm_country = normalize(country)
     for name, url in ONEBUILDING_MAPPING.items():
