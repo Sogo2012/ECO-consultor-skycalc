@@ -221,18 +221,27 @@ def descargar_y_extraer_epw(url_zip):
             shutil.rmtree(temp_dir)
 
 def procesar_datos_clima(epw_path):
-    """Returns exactly: temp_seca, rad_directa, rad_dif."""
+    """Usa Ladybug para extraer vectores completos: luz, viento, humedad y geolocalización."""
+    from ladybug.epw import EPW
     try:
         epw = EPW(epw_path)
         return {
+            'metadata': {
+                'ciudad': epw.location.city,
+                'pais': epw.location.country,
+                'lat': epw.location.latitude,
+                'lon': epw.location.longitude,
+                'tz': epw.location.time_zone,
+                'elevacion': epw.location.elevation
+            },
             'temp_seca': epw.dry_bulb_temperature.values,
             'rad_directa': epw.direct_normal_radiation.values,
             'rad_dif': epw.diffuse_horizontal_radiation.values,
-            # Including metadata as well just in case, though the requirement was specific.
-            # I'll keep it simple but safe.
-            'ciudad': epw.location.city,
-            'pais': epw.location.country
+            # NUEVOS DATOS PARA HVAC Y VISUALES
+            'hum_relativa': epw.relative_humidity.values,
+            'vel_viento': epw.wind_speed.values,
+            'dir_viento': epw.wind_direction.values
         }
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error con Ladybug EPW: {e}")
         return None
