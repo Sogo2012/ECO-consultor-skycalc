@@ -158,9 +158,13 @@ with tab_clima:
         
         cols_hvac = st.columns(4)
         cols_hvac[0].metric("Latitud", f"{md.get('lat', st.session_state.lat)}°")
-        # CORRECCIÓN VITAL: Conectando variables de Jules
-        cols_hvac[1].metric("Elevación", f"{clima.get('elevacion', 0)} m")
-        cols_hvac[2].metric("Humedad Relativa Media", f"{round(sum(clima.get('hum', [0]))/8760, 1)} %")
+        
+        # 🟢 CORRECCIÓN 1: 'elevacion' vive dentro de 'md' (metadata)
+        cols_hvac[1].metric("Elevación", f"{md.get('elevacion', 0)} m")
+        
+        # 🟢 CORRECCIÓN 2: El nombre correcto es 'hum_relativa'
+        cols_hvac[2].metric("Humedad Relativa Media", f"{round(sum(clima.get('hum_relativa', [0]))/8760, 1)} %")
+        
         cols_hvac[3].metric("Velocidad Viento Media", f"{round(sum(clima.get('vel_viento', [0]))/8760, 1)} m/s")
         
         st.divider()
@@ -172,7 +176,8 @@ with tab_clima:
             if not df_viento.empty:
                 df_viento = df_viento[df_viento['vel'] > 0.5] 
                 
-                bins_dir = np.arange(-11.25, 372.0, 22.5)
+                # Usamos 372.0 para evitar el error de Pandas
+                bins_dir = np.arange(-11.25, 372.0, 22.5) 
                 labels_dir = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW','N2']
                 df_viento['Dir_Cat'] = pd.cut(df_viento['dir'], bins=bins_dir, labels=labels_dir, right=False)
                 df_viento['Dir_Cat'] = df_viento['Dir_Cat'].replace('N2', 'N')
@@ -193,9 +198,9 @@ with tab_clima:
             st.markdown("### ☀️ Balance de Irradiación")
             st.caption("Justificación técnica para domos prismáticos de alta difusión.")
             
-            # CORRECCIÓN VITAL: 'rad_difusa' en lugar de 'rad_dif'
+            # 🟢 CORRECCIÓN 3: El nombre correcto de la llave es 'rad_dif'
             suma_directa = sum(clima.get('rad_directa', [0]))
-            suma_difusa = sum(clima.get('rad_difusa', [0]))
+            suma_difusa = sum(clima.get('rad_dif', [0]))
             
             fig_pie = go.Figure(data=[go.Pie(labels=['Radiación Directa (Luz Dura)', 'Radiación Difusa (Luz Suave)'],
                                              values=[suma_directa, suma_difusa], hole=.4,
@@ -219,7 +224,7 @@ with tab_analitica:
         
         temp_data = clima.get('temp_seca', [])
         rad_data = clima.get('rad_directa', [])
-        rad_dif = clima.get('rad_difusa', [])
+        rad_dif = clima.get('rad_dif', [])
 
         if len(temp_data) > 0:
             c1, c2, c3 = st.columns(3)
