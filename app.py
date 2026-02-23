@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import folium
 from streamlit_folium import st_folium
+import plotly.graph_objects as go
+import plotly.express as px
 from weather_utils import obtener_estaciones_cercanas, descargar_y_extraer_epw, procesar_datos_clima
 import os
 
@@ -16,8 +19,6 @@ st.markdown("""
     .stMetric { background-color: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     </style>
     """, unsafe_allow_html=True)
-
-from weather_utils import geocode_name
 
 # Inicialización de estado
 if 'clima_data' not in st.session_state:
@@ -42,22 +43,27 @@ def buscar_estaciones():
 
 # Sidebar - Configuración del Proyecto
 with st.sidebar:
-    st.image("https://img.icons8.com/external-flat-icons-inmotus-design/64/000000/external-Eco-energy-flat-icons-inmotus-design.png", width=100)
+    st.markdown("## 🍃 Eco Consultor")
     st.title("SkyCalc 2.0")
     
     st.subheader("🔍 Métodos de Búsqueda")
     
-    # Método 1: Búsqueda por nombre
+    # Método 1: Búsqueda por nombre (Desactivado temporalmente si no tienes geocode_name importado, usamos el general)
     search_name = st.text_input("Buscar por ciudad o país", placeholder="Ej: Madrid, España")
     if st.button("🔍 Buscar por Nombre"):
         if search_name:
-            n_lat, n_lon = geocode_name(search_name)
-            if n_lat:
-                st.session_state.lat = n_lat
-                st.session_state.lon = n_lon
-                buscar_estaciones()
-            else:
-                st.error("No se pudo localizar ese lugar.")
+            from geopy.geocoders import Nominatim
+            try:
+                geolocator = Nominatim(user_agent="skycalc_buscador_ui")
+                loc = geolocator.geocode(search_name)
+                if loc:
+                    st.session_state.lat = loc.latitude
+                    st.session_state.lon = loc.longitude
+                    buscar_estaciones()
+                else:
+                    st.error("No se pudo localizar ese lugar.")
+            except:
+                st.error("Error al conectar con el servicio de búsqueda.")
 
     st.divider()
     
@@ -75,6 +81,75 @@ with st.sidebar:
 # Tabs principales
 tab_config, tab_clima, tab_analitica, tab_reporte = st.tabs(["🌍 Selección de Clima", "🌤️ Contexto Climático", "📊 Simulación Energética", "📄 Reporte Final"])
 
+# --- PESTAÑA 1: MAPA Y DESCARGA (Lo que faltaba) ---
+with tab_config:
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("🌍 Mapa Interactivo")
+        st.caption("Método 3: Haz clic en el mapa para buscar estaciones en ese punto.")
+
+        m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=8)
+        folium.Marker([st.session_state.lat, st.session_state.lon], tooltip="Ubicación de Proyecto", icon=folium.Icon(color='red', icon='crosshairs')).add_to(m)
+
+        if st.session_state.df_cercanas is not None and not st.session_state.df_cercanas.empty:
+            for idx, st_row in st.session_state.df_cercanas.iterrows():
+                l_est = st_row.get('lat')
+                ln_est = st_row.get('lon')
+                if pd.notna(l_est) and pd.notna(ln_est):
+                    folium.Marker(
+                        [l_est, ln_est],
+                        tooltip=f"{st_row['name']} ({st_row['distancia_km']} km)",
+                        icon=folium.Icon(color='blue', icon='cloud')
+                    ).add_to(m)
+
+        output = st_folium(m, width=700, height=500, use_container_width=True, key="mapa_estaciones")
+
+        # Lógica de clic en el mapa
+        if output and output.get("last_clicked"):
+            c_lat = output["last_clicked"]["lat"]
+            c_lon = output["last_clicked"]["lng"]
+            if round(c_lat, 4) != round(st.session_state.lat, 4) or round(c_lon, 4) != round(st.session_state.lon, 4):
+                st.session_state.lat = c_lat
+                st.session_state.lon = c_lon
+                buscar_estaciones()
+                st.rerun()
+
+    with col2:
+        st.subheader("Estaciones Disponibles")
+        if st.session_state.clima_data:
+            st.success(f"✅ Clima Activo: **{st.session_state.estacion_seleccionada}**")
+
+        if st.session_state.df_cercanas is not None and not st.session_state.df_cercanas.empty:
+            st.write("Selecciona una estación para descargar el .epw:")
+            for idx, row in st.session_state.df_cercanas.iterrows():
+                st_name = row.get('name') or f"Estación {idx}"
+                st_dist = row.get('distancia_km') or 0
+                url = row.get('epw') # Asegurándonos de usar la llave correcta de weather_utils
+
+                with st.container():
+                    st.markdown(f"**{st_name}**")
+                    st.caption(f"📏 Distancia: **{st_dist} km**")
+                    if st.button(f"📥 Descargar Datos", key=f"btn_st_{idx}", use_container_width=True):
+                        if url:
+                            with st.spinner(f"Descargando e inyectando datos..."):
+                                path = descargar_y_extraer_epw(url)
+                                if path:
+                                    try:
+                                        data = procesar_datos_clima(path)
+                                        if data:
+                                            st.session_state.clima_data = data
+                                            st.session_state.estacion_seleccionada = st_name
+                                            st.rerun()
+                                        else:
+                                            st.error("Error al procesar el archivo EPW con Ladybug.")
+                                    finally:
+                                        if os.path.exists(path):
+                                            os.remove(path)
+                                else:
+                                    st.error("Error de descarga. El archivo no está disponible.")
+
+# --- PESTAÑA 2: GRÁFICOS BIOCLIMÁTICOS ---
 with tab_clima:
     st.subheader("Análisis Bioclimático del Sitio")
     
@@ -82,7 +157,6 @@ with tab_clima:
         clima = st.session_state.clima_data
         md = clima['metadata']
         
-        # Mostrar metadatos clave para HVAC
         cols_hvac = st.columns(4)
         cols_hvac[0].metric("Latitud", f"{md['lat']}°")
         cols_hvac[1].metric("Elevación", f"{md['elevacion']} m")
@@ -92,28 +166,20 @@ with tab_clima:
         st.divider()
         col_graf_1, col_graf_2 = st.columns(2)
         
-        # 1. LA ROSA DE LOS VIENTOS (Plotly Express)
         with col_graf_1:
             st.markdown("### 🌬️ Rosa de los Vientos Anual")
-            import plotly.express as px
-            
-            # Preparar datos: categorizar dirección y velocidad
             df_viento = pd.DataFrame({'dir': clima['dir_viento'], 'vel': clima['vel_viento']})
-            # Limpiar datos nulos/calmas
             df_viento = df_viento[df_viento['vel'] > 0.5] 
             
-            # Crear bins de 16 direcciones (N, NNE, NE, etc.)
             bins_dir = np.arange(-11.25, 371.25, 22.5)
             labels_dir = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW','N2']
             df_viento['Dir_Cat'] = pd.cut(df_viento['dir'], bins=bins_dir, labels=labels_dir, right=False)
             df_viento['Dir_Cat'] = df_viento['Dir_Cat'].replace('N2', 'N')
             
-            # Crear bins de velocidad
             bins_vel = [0, 2, 4, 6, 8, 20]
             labels_vel = ['0-2 m/s', '2-4 m/s', '4-6 m/s', '6-8 m/s', '>8 m/s']
             df_viento['Vel_Cat'] = pd.cut(df_viento['vel'], bins=bins_vel, labels=labels_vel)
             
-            # Agrupar para Plotly
             df_rose = df_viento.groupby(['Dir_Cat', 'Vel_Cat']).size().reset_index(name='Frecuencia')
             
             fig_rose = px.bar_polar(df_rose, r="Frecuencia", theta="Dir_Cat", color="Vel_Cat",
@@ -122,7 +188,6 @@ with tab_clima:
             fig_rose.update_layout(margin=dict(t=20, b=20, l=20, r=20))
             st.plotly_chart(fig_rose, use_container_width=True)
 
-        # 2. PROPORCIÓN DE LUZ (Directa vs Difusa)
         with col_graf_2:
             st.markdown("### ☀️ Balance de Irradiación")
             st.caption("Justificación técnica para domos prismáticos de alta difusión.")
@@ -137,14 +202,14 @@ with tab_clima:
             st.plotly_chart(fig_pie, use_container_width=True)
             
     else:
-        st.warning("⚠️ Carga un archivo climático en la pestaña anterior para ver el análisis bioclimático.")
+        st.warning("⚠️ Descarga un archivo climático en la pestaña 'Selección de Clima' para ver el análisis bioclimático.")
 
+# --- PESTAÑA 3: MOTOR DE CÁLCULO ---
 with tab_analitica:
     st.subheader("Motor de Cálculo SkyCalc")
 
     if st.session_state.clima_data:
         clima = st.session_state.clima_data
-        # Acceso seguro a metadatos
         ciudad = clima.get('ciudad') or clima.get('metadata', {}).get('ciudad', 'Desconocida')
         pais = clima.get('pais') or clima.get('metadata', {}).get('pais', 'Desconocido')
         
@@ -179,7 +244,7 @@ with tab_analitica:
             st.error("Los datos de clima están incompletos.")
             
     else:
-        st.warning("⚠️ Selecciona una estación primero en la pestaña 'Ubicación y Clima'.")
+        st.warning("⚠️ Selecciona una estación primero en la pestaña 'Selección de Clima'.")
 
 with tab_reporte:
     st.subheader("Generación de Reportes")
