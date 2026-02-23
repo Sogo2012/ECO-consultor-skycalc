@@ -80,8 +80,14 @@ def obtener_estaciones_cercanas(lat, lon, top_n=5):
         country = "Mexico"
 
     country_url = None
+    # Normalización simple para evitar problemas con acentos
+    def normalize(text):
+        return text.lower().replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
+
+    norm_country = normalize(country)
     for name, url in ONEBUILDING_MAPPING.items():
-        if country.lower() in name.lower() or name.lower() in country.lower():
+        norm_name = normalize(name)
+        if norm_country in norm_name or norm_name in norm_country:
             country_url = url
             break
 
@@ -152,10 +158,14 @@ def obtener_estaciones_cercanas(lat, lon, top_n=5):
                     dist = geodesic((lat, lon), (loc.latitude, loc.longitude)).km
                     verified_estaciones.append({
                         'Estación': cand['Estación'],
+                        'name': cand['Estación'], # Alias para compatibilidad
                         'Distancia (km)': round(dist, 2),
+                        'distancia_km': round(dist, 2), # Alias para compatibilidad
                         'URL_ZIP': cand['URL_ZIP'],
                         'LAT': loc.latitude,
                         'LON': loc.longitude,
+                        'lat': loc.latitude,
+                        'lon': loc.longitude,
                         'location': [loc.latitude, loc.longitude]
                     })
                 time.sleep(1) # Respetar rate-limit
@@ -167,8 +177,12 @@ def obtener_estaciones_cercanas(lat, lon, top_n=5):
 
         # Fallback absoluto
         df['Distancia (km)'] = 0
+        df['distancia_km'] = 0
+        df['name'] = df['Estación']
         df['LAT'] = lat
+        df['lat'] = lat
         df['LON'] = lon
+        df['lon'] = lon
         df['location'] = df.apply(lambda x: [lat, lon], axis=1)
         return df.head(top_n)
 
