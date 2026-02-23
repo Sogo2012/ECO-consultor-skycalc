@@ -1,260 +1,144 @@
-
 import json
 import requests
 import os
 import zipfile
-import urllib.request
+import pandas as pd
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim, Photon
-import pandas as pd
 from ladybug.epw import EPW
 import shutil
 import tempfile
-from bs4 import BeautifulSoup
 import urllib.parse
-import re
 import random
-import time
 
-# Load mapping of countries to OneBuilding URLs
+# 1. Cargar el Diccionario Global
 try:
     with open("onebuilding_mapping.json", "r") as f:
         ONEBUILDING_MAPPING = json.load(f)
 except FileNotFoundError:
     ONEBUILDING_MAPPING = {}
 
-def get_location_info(lat, lon):
-    """Retorna información de ubicación (país, ciudad) usando geocoding inverso."""
-    # Intentar con Photon primero (suele ser más permisivo con 429)
+def get_country_from_coords(lat, lon):
+    """Obtiene el nombre del país en inglés a partir de coordenadas para asegurar el match."""
     try:
-        geolocator = Photon(user_agent="skycalc_explorer_v5")
-        location = geolocator.reverse(f"{lat}, {lon}", timeout=10)
-        if location and 'properties' in location.raw:
-            props = location.raw['properties']
-            country = props.get('country')
-            city = props.get('city') or props.get('name')
-            return country, city
-    except:
-        pass
-
-    # Fallback a Nominatim con un user agent único
-    try:
+        # Usamos Nominatim forzando el idioma inglés para que coincida con OneBuilding
         ua = f"skycalc_agent_{random.randint(1000, 9999)}"
         geolocator = Nominatim(user_agent=ua)
-        location = geolocator.reverse(f"{lat}, {lon}", language='en', timeout=10)
+        location = geolocator.reverse(f"{lat}, {lon}", timeout=10, language='en')
         if location and 'address' in location.raw:
-            addr = location.raw['address']
-            country = addr.get('country')
-            city = addr.get('city') or addr.get('town') or addr.get('village') or addr.get('suburb')
-            return country, city
-    except Exception as e:
-        print(f"Error en geocoding: {e}")
-    return None, None
-
-def extract_city_from_filename(filename):
-    """
-    Intenta extraer el nombre de la ciudad del formato de OneBuilding.
-    Ejemplo: MEX_CMX_Cuidad.Mexico-Mexico.City.Intl.AP-Juarez.Intl.AP.766793_TMYx.zip
-    """
-    # Quitar extensiones
-    name = filename.split('/')[-1].replace('.zip', '')
-    # Quitar sufijos comunes
-    name = re.sub(r'\.7\d{5}.*', '', name) # Quitar ID de WMO y años
-    name = re.sub(r'_TMYx.*', '', name)
-    
-    # Split por _
-    parts = name.split('_')
-    if len(parts) >= 3:
-        # Suele ser PAIS_ESTADO_CIUDAD
-        city = parts[2]
-    elif len(parts) == 2:
-        city = parts[1]
-    else:
-        city = parts[0]
-
-    return city.replace('.', ' ').replace('-', ' ')
+            return location.raw['address'].get('country', '')
+    except:
+        pass
+    return ""
 
 def obtener_estaciones_cercanas(lat, lon, top_n=5):
-    country, city_target = get_location_info(lat, lon)
-    if not country:
-        country = "Mexico"
+    """Raspa la web de OneBuilding y devuelve las estaciones más cercanas."""
+    country_name = get_country_from_coords(lat, lon)
+    if not country_name:
+        return pd.DataFrame() # No se pudo identificar el país
 
-    country_url = None
-    # Normalización simple para evitar problemas con acentos
-    def normalize(text):
-        res = text.lower().replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
-        # Mapeos comunes de nombres de países
-        mappings = {
-            "espana": "spain",
-            "mexico": "mexico",
-            "estados unidos": "usa",
-            "united states": "usa",
-            "brasil": "brazil"
-        }
-        for k, v in mappings.items():
-            if k in res:
-                return v
-        return res
-
-    norm_country = normalize(country)
-    for name, url in ONEBUILDING_MAPPING.items():
-        norm_name = normalize(name)
-        if norm_country in norm_name or norm_name in norm_country:
-            country_url = url
+    # 2. Búsqueda Inteligente del País en el JSON
+    target_url = None
+    country_clean = country_name.lower().replace(" ", "")
+    
+    for key, url in ONEBUILDING_MAPPING.items():
+        key_clean = key.lower().replace("_", "").replace(".", "")
+        if country_clean in key_clean or key_clean in country_clean:
+            target_url = url
             break
+            
+    if not target_url:
+        return pd.DataFrame() # El país no está en la base de datos
 
-    if not country_url:
-        return pd.DataFrame()
-
+    # 3. Web Scraping de la tabla de estaciones
     try:
-        resp = requests.get(country_url, timeout=15)
-        if resp.status_code != 200:
-            return pd.DataFrame()
-
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        links = soup.find_all('a', href=True)
-
-        estaciones = []
-        seen_base_names = set()
-
-        for link in links:
-            href = link['href']
-            if href.endswith('.zip') and 'TMYx' in href:
-                # Filtrar versiones (usar la más reciente o base)
-                base_name = re.sub(r'\.\d{4}-\d{4}', '', href)
-                if base_name in seen_base_names:
-                    continue
-                seen_base_names.add(base_name)
-
-                full_url = urllib.parse.urljoin(country_url, href)
-                city_name = extract_city_from_filename(href)
-
-                estaciones.append({
-                    'Estación': base_name.replace('.zip', '').split('/')[-1],
-                    'URL_ZIP': full_url,
-                    'City_Search': city_name
-                })
-
-        if not estaciones:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(estaciones)
-
-        # Estrategia de búsqueda inteligente:
-        # 1. Priorizar estaciones que contengan el nombre de la ciudad objetivo
-        # 2. Si hay pocas, tomar una muestra representativa
-        # 3. Geocodificar solo los candidatos más probables
-
-        candidatos = []
-        if city_target:
-            mask = df['City_Search'].str.contains(city_target, case=False, na=False)
-            candidatos = df[mask].head(10).to_dict('records')
-
-        # Si no hay candidatos por nombre, tomar los primeros 5 como fallback
-        if len(candidatos) < 3:
-            # Evitar duplicados si ya agregamos algunos
-            existing_urls = [c['URL_ZIP'] for c in candidatos]
-            for _, row in df.head(5).iterrows():
-                if row['URL_ZIP'] not in existing_urls:
-                    candidatos.append(row.to_dict())
-
-        # Usar Photon para geocodificar candidatos (más rápido y menos bloqueos)
-        geolocator = Photon(user_agent="skycalc_explorer_v6")
-        verified_estaciones = []
-
-        for cand in candidatos[:10]:
+        base_url = target_url.rsplit('/', 1)[0] + '/'
+        
+        # Leemos todas las tablas HTML de la página
+        dfs = pd.read_html(target_url)
+        if not dfs: return pd.DataFrame()
+        
+        df_stations = dfs[0] # Generalmente la primera tabla tiene los datos
+        
+        # Limpiar la tabla (OneBuilding usa columnas como 'Station', 'Lat', 'Lon', 'Elev', 'ZIP')
+        columnas_validas = [col for col in df_stations.columns if 'Lat' in col or 'Lon' in col or 'Station' in col or 'ZIP' in col]
+        if not columnas_validas: return pd.DataFrame()
+        
+        df_stations = df_stations.dropna(subset=['Lat', 'Lon'])
+        
+        # 4. Calcular distancias
+        def calc_distance(row):
             try:
-                query = f"{cand['City_Search']}, {country}"
-                loc = geolocator.geocode(query, timeout=5)
-                if loc:
-                    dist = geodesic((lat, lon), (loc.latitude, loc.longitude)).km
-                    verified_estaciones.append({
-                        'Estación': cand['Estación'],
-                        'name': cand['Estación'], # Alias para compatibilidad
-                        'Distancia (km)': round(dist, 2),
-                        'distancia_km': round(dist, 2), # Alias para compatibilidad
-                        'URL_ZIP': cand['URL_ZIP'],
-                        'LAT': loc.latitude,
-                        'LON': loc.longitude,
-                        'lat': loc.latitude,
-                        'lon': loc.longitude,
-                        'location': [loc.latitude, loc.longitude]
-                    })
-                time.sleep(1) # Respetar rate-limit
+                return geodesic((lat, lon), (float(row['Lat']), float(row['Lon']))).km
             except:
-                continue
-
-        if verified_estaciones:
-            return pd.DataFrame(verified_estaciones).sort_values('Distancia (km)').head(top_n)
-
-        # Fallback absoluto
-        df['Distancia (km)'] = 0
-        df['distancia_km'] = 0
-        df['name'] = df['Estación']
-        df['LAT'] = lat
-        df['lat'] = lat
-        df['LON'] = lon
-        df['lon'] = lon
-        df['location'] = df.apply(lambda x: [lat, lon], axis=1)
-        return df.head(top_n)
-
+                return 9999
+                
+        df_stations['distancia_km'] = df_stations.apply(calc_distance, axis=1)
+        df_stations = df_stations.sort_values('distancia_km').head(top_n)
+        
+        # 5. Formatear salida para evitar KeyErrors
+        resultados = []
+        for _, row in df_stations.iterrows():
+            # Construir URL del ZIP
+            zip_name = str(row.get('ZIP', '')).strip()
+            if zip_name and zip_name.endswith('.zip'):
+                full_zip_url = urllib.parse.urljoin(base_url, zip_name)
+                
+                resultados.append({
+                    'name': str(row.get('Station', 'Estación EPW')),
+                    'lat': float(row['Lat']),
+                    'lon': float(row['Lon']),
+                    'distancia_km': round(row['distancia_km'], 1),
+                    'epw': full_zip_url
+                })
+                
+        return pd.DataFrame(resultados)
+        
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error en scraping: {e}")
         return pd.DataFrame()
 
 def descargar_y_extraer_epw(url_zip):
-    """Descarga ZIP, extrae EPW y lo guarda en un archivo temporal único."""
-    temp_dir = tempfile.mkdtemp(prefix="epw_process_")
-    zip_fn = os.path.join(temp_dir, "clima.zip")
+    """Descarga el ZIP, lo extrae temporalmente y devuelve la ruta del EPW."""
+    temp_dir = tempfile.mkdtemp()
+    zip_path = os.path.join(temp_dir, "clima.zip")
+    
     try:
-        opener = urllib.request.build_opener()
-        opener.addheaders = [('User-agent', 'Mozilla/5.0')]
-        urllib.request.install_opener(opener)
-        urllib.request.urlretrieve(url_zip, zip_fn)
-        
-        with zipfile.ZipFile(zip_fn, 'r') as z:
+        response = requests.get(url_zip, stream=True, timeout=20)
+        response.raise_for_status()
+        with open(zip_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+                
+        with zipfile.ZipFile(zip_path, 'r') as z:
             z.extractall(temp_dir)
 
-        epw_files = []
+        # Buscar el archivo EPW extraído
         for root, _, files in os.walk(temp_dir):
             for f in files:
                 if f.endswith('.epw'):
-                    epw_files.append(os.path.join(root, f))
-
-        if not epw_files:
-            return None
-
-        # Crear archivo temporal único para el EPW
-        fd, target_path = tempfile.mkstemp(suffix=".epw", prefix="skycalc_")
-        os.close(fd)
-        shutil.copy(epw_files[0], target_path)
-        return target_path
-        
+                    fd, target_path = tempfile.mkstemp(suffix=".epw", prefix="skycalc_")
+                    os.close(fd)
+                    shutil.copy(os.path.join(root, f), target_path)
+                    return target_path
+        return None
     except Exception as e:
-        print(f"Error en descarga/extracción: {e}")
+        print(f"Error en descarga: {e}")
         return None
     finally:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 def procesar_datos_clima(epw_path):
+    """Usa Ladybug para extraer los vectores de 8760 horas."""
     try:
         epw = EPW(epw_path)
         return {
-            'metadata': {
-                'ciudad': epw.location.city,
-                'pais': epw.location.country,
-                'lat': epw.location.latitude,
-                'lon': epw.location.longitude,
-            },
             'ciudad': epw.location.city,
             'pais': epw.location.country,
             'temp_seca': epw.dry_bulb_temperature.values,
-            'hum': epw.relative_humidity.values,
             'rad_directa': epw.direct_normal_radiation.values,
-            'rad_dir': epw.direct_normal_radiation.values,
-            'rad_dif': epw.diffuse_horizontal_radiation.values
+            'rad_difusa': epw.diffuse_horizontal_radiation.values
         }
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error con Ladybug EPW: {e}")
         return None
