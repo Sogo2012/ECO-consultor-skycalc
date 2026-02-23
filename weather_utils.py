@@ -240,7 +240,9 @@ def procesar_datos_clima(epw_path):
             # NUEVOS DATOS PARA HVAC Y VISUALES
             'hum_relativa': epw.relative_humidity.values,
             'vel_viento': epw.wind_speed.values,
-            'dir_viento': epw.wind_direction.values
+            'dir_viento': epw.wind_direction.values,
+            # 🟢 NUEVO DATO: Nubosidad (0 a 10)
+            'nubes': epw.total_sky_cover.values
         }
     except Exception as e:
         print(f"Error con Ladybug EPW: {e}")
