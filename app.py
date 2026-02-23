@@ -17,6 +17,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+from weather_utils import geocode_name
+
 # Inicialización de estado
 if 'clima_data' not in st.session_state:
     st.session_state.clima_data = None
@@ -24,27 +26,51 @@ if 'estacion_seleccionada' not in st.session_state:
     st.session_state.estacion_seleccionada = None
 if 'df_cercanas' not in st.session_state:
     st.session_state.df_cercanas = None
+if 'lat' not in st.session_state:
+    st.session_state.lat = 20.5888
+if 'lon' not in st.session_state:
+    st.session_state.lon = -100.3899
+
+def buscar_estaciones():
+    with st.spinner("Buscando estaciones cercanas..."):
+        df_cercanas = obtener_estaciones_cercanas(st.session_state.lat, st.session_state.lon)
+        st.session_state.df_cercanas = df_cercanas
+        if df_cercanas.empty:
+            st.error("No se encontraron estaciones para esta ubicación.")
+        else:
+            st.success(f"Encontradas {len(df_cercanas)} estaciones.")
 
 # Sidebar - Configuración del Proyecto
 with st.sidebar:
     st.image("https://img.icons8.com/external-flat-icons-inmotus-design/64/000000/external-Eco-energy-flat-icons-inmotus-design.png", width=100)
     st.title("SkyCalc 2.0")
-    st.subheader("Configuración Global")
     
-    lat = st.number_input("Latitud", value=20.5888, format="%.4f")
-    lon = st.number_input("Longitud", value=-100.3899, format="%.4f")
+    st.subheader("🔍 Métodos de Búsqueda")
     
+    # Método 1: Búsqueda por nombre
+    search_name = st.text_input("Buscar por ciudad o país", placeholder="Ej: Madrid, España")
+    if st.button("🔍 Buscar por Nombre"):
+        if search_name:
+            n_lat, n_lon = geocode_name(search_name)
+            if n_lat:
+                st.session_state.lat = n_lat
+                st.session_state.lon = n_lon
+                buscar_estaciones()
+            else:
+                st.error("No se pudo localizar ese lugar.")
+
+    st.divider()
+    
+    # Método 2: Búsqueda por coordenadas
+    st.subheader("📍 Coordenadas Exactas")
+    st.session_state.lat = st.number_input("Latitud", value=st.session_state.lat, format="%.4f")
+    st.session_state.lon = st.number_input("Longitud", value=st.session_state.lon, format="%.4f")
+
+    if st.button("🚀 Buscar en Coordenadas"):
+        buscar_estaciones()
+
     st.divider()
     tipo_analisis = st.selectbox("Tipo de Análisis", ["Residencial", "Comercial", "Industrial"])
-    
-    if st.button("📍 Localizar Estaciones"):
-        with st.spinner("Buscando estaciones cercanas..."):
-            df_cercanas = obtener_estaciones_cercanas(lat, lon)
-            st.session_state.df_cercanas = df_cercanas
-            if df_cercanas.empty:
-                st.error("No se encontraron estaciones para esta ubicación.")
-            else:
-                st.success(f"Encontradas {len(df_cercanas)} estaciones.")
 
 # Tabs principales
 tab_config, tab_analitica, tab_reporte = st.tabs(["🌍 Ubicación y Clima", "📊 Simulación Energética", "📄 Reporte Final"])
@@ -53,42 +79,45 @@ with tab_config:
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.subheader("Mapa de Estaciones EPW")
-        if st.session_state.df_cercanas is not None and not st.session_state.df_cercanas.empty:
-            df = st.session_state.df_cercanas
-            m = folium.Map(location=[lat, lon], zoom_start=10)
-            folium.Marker([lat, lon], tooltip="Proyecto", icon=folium.Icon(color='red', icon='home')).add_to(m)
-            
-            for idx, st_row in df.iterrows():
-                # Acceso defensivo a coordenadas y etiquetas
-                lat_est = st_row.get('LAT') or st_row.get('lat')
-                lon_est = st_row.get('LON') or st_row.get('lon')
+        st.subheader("🌍 Mapa Interactivo")
+        st.caption("Método 3: Haz clic en el mapa para buscar estaciones en ese punto.")
 
-                nombre_est = st_row.get('name', st_row.get('Estación', 'Estación Desconocida'))
-                dist_est = st_row.get('distancia_km', st_row.get('Distancia (km)', 0))
+        m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=8)
+        folium.Marker([st.session_state.lat, st.session_state.lon], tooltip="Ubicación seleccionada", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
 
-                if lat_est is not None and lon_est is not None:
+        if st.session_state.df_cercanas is not None:
+            for idx, st_row in st.session_state.df_cercanas.iterrows():
+                l_est = st_row.get('lat')
+                ln_est = st_row.get('lon')
+                if l_est and ln_est:
                     folium.Marker(
-                        location=[lat_est, lon_est],
-                        tooltip=f"{nombre_est} ({dist_est} km)",
-                        popup=f"{nombre_est} ({dist_est} km)",
-                        icon=folium.Icon(color='blue', icon='info-sign')
+                        [l_est, ln_est],
+                        tooltip=f"{st_row['name']} ({st_row['distancia_km']} km)",
+                        icon=folium.Icon(color='blue', icon='cloud')
                     ).add_to(m)
-            
-            st_folium(m, width=700, height=500, key="mapa_estaciones")
-        else:
-            st.info("Presiona 'Localizar Estaciones' en el sidebar para ver el mapa.")
+
+        output = st_folium(m, width=700, height=500, key="mapa_estaciones")
+
+        # Lógica de clic en el mapa
+        if output and output.get("last_clicked"):
+            c_lat = output["last_clicked"]["lat"]
+            c_lon = output["last_clicked"]["lng"]
+            if round(c_lat, 4) != round(st.session_state.lat, 4) or round(c_lon, 4) != round(st.session_state.lon, 4):
+                st.session_state.lat = c_lat
+                st.session_state.lon = c_lon
+                buscar_estaciones()
+                st.rerun()
 
     with col2:
         st.subheader("Estaciones Disponibles")
         if st.session_state.df_cercanas is not None and not st.session_state.df_cercanas.empty:
             st.write("Selecciona para cargar datos:")
             for idx, row in st.session_state.df_cercanas.iterrows():
-                st_name = row.get('Estación') or row.get('name') or f"Estación {idx}"
-                st_dist = row.get('Distancia (km)') or row.get('distancia_km') or 0
+                st_name = row.get('name') or f"Estación {idx}"
+                st_dist = row.get('distancia_km') or 0
                 url = row.get('URL_ZIP')
 
-                if st.button(f"📥 {st_name} ({st_dist} km)", key=f"btn_{idx}"):
+                if st.button(f"📥 {st_name} ({st_dist} km)", key=f"btn_st_{idx}"):
                     if url:
                         with st.spinner(f"Descargando datos de {st_name}..."):
                             path = descargar_y_extraer_epw(url)
@@ -125,13 +154,14 @@ with tab_analitica:
         st.info(f"Analizando: **{ciudad}, {pais}** (vía {st.session_state.estacion_seleccionada})")
         
         temp_data = clima.get('temp_seca', [])
-        rad_data = clima.get('rad_dir') or clima.get('rad_directa', [])
+        rad_data = clima.get('rad_directa', [])
+        rad_dif = clima.get('rad_dif', [])
 
         if len(temp_data) > 0:
             c1, c2, c3 = st.columns(3)
             c1.metric("Temp. Media", f"{round(sum(temp_data)/len(temp_data), 1)} °C")
-            c2.metric("Rad. Solar Máx", f"{max(rad_data) if len(rad_data) > 0 else 'N/A'} W/m²")
-            c3.metric("Horas de Análisis", f"{len(temp_data)} h")
+            c2.metric("Rad. Directa Máx", f"{max(rad_data) if len(rad_data) > 0 else 'N/A'} W/m²")
+            c3.metric("Rad. Difusa Máx", f"{max(rad_dif) if len(rad_dif) > 0 else 'N/A'} W/m²")
 
             st.divider()
 
