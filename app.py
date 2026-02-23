@@ -117,30 +117,28 @@ with tab_config:
                 st_dist = row.get('distancia_km') or 0
                 url = row.get('URL_ZIP')
 
-                if st.button(f"📥 {st_name} ({st_dist} km)", key=f"btn_st_{idx}"):
-                    if url:
-                        with st.spinner(f"Descargando datos de {st_name}..."):
-                            path = descargar_y_extraer_epw(url)
-                            if path:
-                                try:
-                                    data = procesar_datos_clima(path)
-                                    if data:
-                                        st.session_state.clima_data = data
-                                        st.session_state.estacion_seleccionada = st_name
-                                        st.success("✅ Datos cargados correctamente.")
-                                    else:
-                                        st.error("No se pudieron procesar los datos del archivo EPW.")
-                                finally:
-                                    if os.path.exists(path):
-                                        os.remove(path)
-                            else:
-                                st.error("No se pudo descargar el archivo de clima.")
-        
-        st.divider()
-        st.subheader("Milla Cero (NASA POWER)")
-        if st.button("🚀 Usar Datos Satelitales (Alta Precisión)"):
-            st.warning("Integrando con API de NASA POWER... (Simulado)")
-            st.session_state.estacion_seleccionada = "NASA POWER Satelital"
+                # Diseño mejorado para lectura clara de las estaciones
+                with st.container():
+                    st.markdown(f"**{st_name}**")
+                    st.caption(f"📏 Distancia: **{st_dist} km**")
+                    if st.button(f"📥 Descargar Datos", key=f"btn_st_{idx}", use_container_width=True):
+                        if url:
+                            with st.spinner(f"Descargando datos..."):
+                                path = descargar_y_extraer_epw(url)
+                                if path:
+                                    try:
+                                        data = procesar_datos_clima(path)
+                                        if data:
+                                            st.session_state.clima_data = data
+                                            st.session_state.estacion_seleccionada = st_name
+                                            st.success("✅ Datos cargados correctamente.")
+                                        else:
+                                            st.error("No se pudieron procesar los datos del archivo EPW.")
+                                    finally:
+                                        if os.path.exists(path):
+                                            os.remove(path)
+                                else:
+                                    st.error("No se pudo descargar el archivo de clima.")
 
 with tab_analitica:
     st.subheader("Motor de Cálculo SkyCalc")
