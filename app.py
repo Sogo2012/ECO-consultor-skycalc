@@ -123,7 +123,6 @@ with tab_config:
                 st_name = row.get('name') or row.get('Station') or f"Estación {idx}"
                 st_dist = row.get('distancia_km') or 0
                 
-                # CORRECCIÓN VITAL: Conectando con la etiqueta de Jules
                 url = row.get('URL_ZIP') or row.get('epw') 
 
                 with st.container():
@@ -158,13 +157,8 @@ with tab_clima:
         
         cols_hvac = st.columns(4)
         cols_hvac[0].metric("Latitud", f"{md.get('lat', st.session_state.lat)}°")
-        
-        # 🟢 CORRECCIÓN 1: 'elevacion' vive dentro de 'md' (metadata)
         cols_hvac[1].metric("Elevación", f"{md.get('elevacion', 0)} m")
-        
-        # 🟢 CORRECCIÓN 2: El nombre correcto es 'hum_relativa'
         cols_hvac[2].metric("Humedad Relativa Media", f"{round(sum(clima.get('hum_relativa', [0]))/8760, 1)} %")
-        
         cols_hvac[3].metric("Velocidad Viento Media", f"{round(sum(clima.get('vel_viento', [0]))/8760, 1)} m/s")
         
         st.divider()
@@ -176,7 +170,6 @@ with tab_clima:
             if not df_viento.empty:
                 df_viento = df_viento[df_viento['vel'] > 0.5] 
                 
-                # Usamos 372.0 para evitar el error de Pandas
                 bins_dir = np.arange(-11.25, 372.0, 22.5) 
                 labels_dir = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW','N2']
                 df_viento['Dir_Cat'] = pd.cut(df_viento['dir'], bins=bins_dir, labels=labels_dir, right=False)
@@ -198,30 +191,66 @@ with tab_clima:
             st.markdown("### ☀️ Balance de Irradiación")
             st.caption("Justificación técnica para domos prismáticos de alta difusión.")
             
-            # 🟢 CORRECCIÓN 3: El nombre correcto de la llave es 'rad_dif'
             suma_directa = sum(clima.get('rad_directa', [0]))
-            suma_difusa = sum(clima.get('rad_dif', [0]))
+            suma_difusa = sum(clima.get('rad_difusa', [0])) # Asegurado para coincidir con la gaveta correcta
             
             fig_pie = go.Figure(data=[go.Pie(labels=['Radiación Directa (Luz Dura)', 'Radiación Difusa (Luz Suave)'],
                                              values=[suma_directa, suma_difusa], hole=.4,
                                              marker_colors=['#f39c12', '#bdc3c7'])])
             fig_pie.update_layout(margin=dict(t=20, b=20, l=20, r=20), template="plotly_white")
             st.plotly_chart(fig_pie, use_container_width=True)
-            st.divider()
+            
+        st.divider()
+        
+        # --- EL NUEVO MAPA DE CALOR ESTILO POLLINATION ---
+        st.markdown("### 🌡️ Mapa de Calor Anual (Temperatura de Bulbo Seco)")
+        st.caption("Visualización de las 8,760 horas del año. Identifica los picos críticos de calor (rojo) y frío (azul) para el diseño del HVAC.")
+        
+        temp_array = np.array(clima.get('temp_seca', np.zeros(8760)))
+        
+        # Validación de seguridad: Asegurarnos de que el EPW tenga exactamente 8760 horas
+        if len(temp_array) == 8760:
+            # Transformar el array 1D en una matriz 2D (24h x 365d)
+            temp_matriz = temp_array.reshape(365, 24).T 
+            
+            fig_calor = go.Figure(data=go.Heatmap(
+                z=temp_matriz,
+                x=list(range(1, 366)),
+                y=list(range(0, 24)),
+                colorscale='RdYlBu_r', # Escala estándar BEM: Rojo-Amarillo-Azul invertida
+                colorbar=dict(title="Temp (°C)"),
+                hovertemplate="Día: %{x}<br>Hora: %{y}:00<br>Temp: %{z:.1f} °C<extra></extra>"
+            ))
+            
+            fig_calor.update_layout(
+                xaxis_title="Días del Año (Enero - Diciembre)",
+                yaxis_title="Hora del Día (00:00 - 23:00)",
+                yaxis=dict(tickmode='linear', tick0=0, dtick=4), # Marcas de hora legibles
+                margin=dict(t=10, b=30, l=40, r=20),
+                height=400,
+                template="plotly_white"
+            )
+            st.plotly_chart(fig_calor, use_container_width=True)
+        else:
+            st.warning("⚠️ El archivo climático tiene un formato inusual (no son 8760 horas), no se puede generar el mapa de calor.")
+            
+        st.divider()
         st.markdown("### ☁️ Termodinámica y Nubosidad (Análisis BEM)")
         
-        # 1. Cálculo rápido de Grados Día (Base 18.3°C / 65°F estándar ASHRAE)
-        temp_diaria = np.array([sum(clima['temp_seca'][i:i+24])/24 for i in range(0, 8760, 24)])
+        # Cálculo rápido de Grados Día
+        temp_diaria = np.array([sum(temp_array[i:i+24])/24 for i in range(0, 8760, 24)]) if len(temp_array) == 8760 else np.zeros(365)
         cdd_anual = sum([t - 18.3 for t in temp_diaria if t > 18.3])
         hdd_anual = sum([18.3 - t for t in temp_diaria if t < 18.3])
         
-        # 2. Cálculo de Nubosidad Media (Viene en escala 0-10, lo pasamos a %)
-        nubosidad_media = (sum(clima['nubes']) / 8760) * 10 
+        # Cálculo de Nubosidad
+        nubes_array = clima.get('nubes', np.zeros(8760))
+        nubosidad_media = (sum(nubes_array) / 8760) * 10 if len(nubes_array) > 0 else 0
 
         col_termo1, col_termo2, col_termo3 = st.columns(3)
         col_termo1.metric("Grados Día Refrigeración (CDD)", f"{int(cdd_anual)}", "Demanda de Aire Acondicionado", delta_color="inverse")
         col_termo2.metric("Grados Día Calefacción (HDD)", f"{int(hdd_anual)}", "Demanda de Calefacción")
         col_termo3.metric("Cobertura de Nubes Promedio", f"{int(nubosidad_media)} %", "Ideal para lentes prismáticos")
+        
     else:
         st.warning("⚠️ Descarga un archivo climático en la pestaña 'Selección de Clima' para ver el análisis bioclimático.")
 
@@ -238,7 +267,9 @@ with tab_analitica:
         
         temp_data = clima.get('temp_seca', [])
         rad_data = clima.get('rad_directa', [])
-        rad_dif = clima.get('rad_dif', [])
+        
+        # 🟢 CORRECCIÓN VITAL PARA EL MOTOR: 'rad_difusa' en vez de 'rad_dif'
+        rad_dif = clima.get('rad_difusa', [])
 
         if len(temp_data) > 0:
             c1, c2, c3 = st.columns(3)
