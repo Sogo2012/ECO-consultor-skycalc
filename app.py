@@ -192,7 +192,7 @@ with tab_clima:
             st.caption("Justificación técnica para domos prismáticos de alta difusión.")
             
             suma_directa = sum(clima.get('rad_directa', [0]))
-            suma_difusa = sum(clima.get('rad_difusa', [0])) # Asegurado para coincidir con la gaveta correcta
+            suma_difusa = sum(clima.get('rad_dif', [0])) # Asegurado para coincidir con la gaveta correcta
             
             fig_pie = go.Figure(data=[go.Pie(labels=['Radiación Directa (Luz Dura)', 'Radiación Difusa (Luz Suave)'],
                                              values=[suma_directa, suma_difusa], hole=.4,
