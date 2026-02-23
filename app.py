@@ -7,11 +7,17 @@ import plotly.graph_objects as go
 import folium
 from streamlit_folium import st_folium
 import os
+from geopy.geocoders import Nominatim
 from weather_utils import obtener_estaciones_cercanas, descargar_y_extraer_epw, procesar_datos_clima
 
-# --- 1. CONFIGURACIÓN INICIAL ---
+# --- 1. CONFIGURACIÓN INICIAL Y MEMORIA BLINDADA ---
 st.set_page_config(page_title="SkyCalc 2.0 | Eco Consultor", layout="wide", page_icon="⚡")
 
+# Evitar la amnesia de Streamlit guardando todo en session_state
+if 'lat_lon' not in st.session_state:
+    st.session_state.lat_lon = [15.0, -90.0] # Coordenadas por defecto
+if 'zoom_mapa' not in st.session_state:
+    st.session_state.zoom_mapa = 4
 if 'clima_data' not in st.session_state:
     st.session_state.clima_data = None
 if 'estacion_seleccionada' not in st.session_state:
@@ -105,24 +111,59 @@ st.divider()
 tab_geo, tab_3d, tab_analitica = st.tabs(["📍 Ubicación y Clima", "📐 Distribución 2D", "📊 Análisis Energético"])
 
 with tab_geo:
-    st.subheader("Buscador Global de Archivos EPW")
-    col_mapa, col_datos = st.columns([2, 1])
+    st.subheader("Buscador Universal de Clima")
     
-    centro_lat, centro_lon = 15.0, -90.0
-    if 'map_data_v3' in st.session_state and st.session_state['map_data_v3']:
-        if st.session_state['map_data_v3'].get('last_clicked'):
-            centro_lat = st.session_state['map_data_v3']['last_clicked']['lat']
-            centro_lon = st.session_state['map_data_v3']['last_clicked']['lng']
+    # --- BUSCADOR POR NOMBRE O COORDENADAS ---
+    query = st.text_input("🔍 Escribe una ciudad, país o pega coordenadas (ej. 'Madrid' o '40.41, -3.70')")
+    if st.button("Buscar Ubicación"):
+        if ',' in query and any(char.isdigit() for char in query):
+            # Es una coordenada
+            try:
+                lat_str, lon_str = query.split(',')
+                st.session_state.lat_lon = [float(lat_str.strip()), float(lon_str.strip())]
+                st.session_state.zoom_mapa = 10
+                st.rerun()
+            except ValueError:
+                st.error("Formato de coordenadas inválido. Usa: Latitud, Longitud")
+        else:
+            # Es un nombre de ciudad (Usamos Geopy)
+            try:
+                geolocator = Nominatim(user_agent="skycalc_buscador")
+                loc = geolocator.geocode(query)
+                if loc:
+                    st.session_state.lat_lon = [loc.latitude, loc.longitude]
+                    st.session_state.zoom_mapa = 10
+                    st.rerun()
+                else:
+                    st.error("No se encontró la ubicación. Intenta ser más específico.")
+            except Exception as e:
+                st.error("Error al conectar con el servicio de búsqueda.")
+
+    # --- CAPTURAR CLIC EN EL MAPA ---
+    # Revisamos si el mapa fue clickeado antes de dibujarlo para actualizar la memoria
+    if 'mapa_v3' in st.session_state and st.session_state['mapa_v3']:
+        clicked = st.session_state['mapa_v3'].get('last_clicked')
+        if clicked:
+            click_lat, click_lng = clicked['lat'], clicked['lng']
+            if round(click_lat, 4) != round(st.session_state.lat_lon[0], 4): # Solo actualizar si cambió
+                st.session_state.lat_lon = [click_lat, click_lng]
+
+    col_mapa, col_datos = st.columns([2, 1])
 
     with col_mapa:
-        m = folium.Map(location=[centro_lat, centro_lon], zoom_start=4)
+        m = folium.Map(location=st.session_state.lat_lon, zoom_start=st.session_state.zoom_mapa)
         
-        # Integración segura de la función de Jules
-        df_estaciones = obtener_estaciones_cercanas(centro_lat, centro_lon, top_n=5)
+        # Marcador principal del proyecto (Rojo)
+        folium.Marker(
+            location=st.session_state.lat_lon,
+            popup="Punto de Proyecto",
+            icon=folium.Icon(color='red', icon='crosshairs')
+        ).add_to(m)
+        
+        df_estaciones = obtener_estaciones_cercanas(st.session_state.lat_lon[0], st.session_state.lat_lon[1], top_n=5)
         
         if df_estaciones is not None and not df_estaciones.empty:
             for _, st_row in df_estaciones.iterrows():
-                # PROGRAMACIÓN DEFENSIVA (Elimina el KeyError para siempre)
                 lat_est = st_row.get('lat', st_row.get('Lat', st_row.get('latitude', 0)))
                 lon_est = st_row.get('lon', st_row.get('Lon', st_row.get('longitude', 0)))
                 nombre_est = st_row.get('name', st_row.get('Estación', st_row.get('station', 'Estación EPW')))
@@ -136,40 +177,38 @@ with tab_geo:
             
         m.add_child(folium.LatLngPopup())
         map_data = st_folium(m, height=400, width=700, key="mapa_v3")
-        st.session_state['map_data_v3'] = map_data
     
     with col_datos:
-        if map_data and map_data.get('last_clicked'):
-            lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
-            st.write(f"📍 **Coordenadas:** {lat:.3f}, {lon:.3f}")
-            
-            if df_estaciones is not None and not df_estaciones.empty:
-                st.markdown("### Estación Recomendada:")
-                mejor_est = df_estaciones.iloc[0]
-                nombre_optimo = mejor_est.get('name', mejor_est.get('Estación', 'Estación EPW'))
-                dist_optima = mejor_est.get('distancia_km', 0)
-                url_optima = mejor_est.get('epw', mejor_est.get('URL_ZIP'))
-                
-                st.info(f"**{nombre_optimo}**\n\nDistancia: {dist_optima} km")
-                
-                if st.button("📥 Descargar EPW y Cargar Clima", type="primary"):
-                    with st.spinner("Descargando e inyectando datos climáticos..."):
-                        try:
-                            epw_path = descargar_y_extraer_epw(url_optima)
-                            if epw_path:
-                                datos_clima = procesar_datos_clima(epw_path)
-                                st.session_state.clima_data = datos_clima
-                                st.session_state.estacion_seleccionada = nombre_optimo
-                                st.success("✅ Clima cargado. Ve a Análisis Energético.")
-                                st.rerun()
-                            else:
-                                st.error("Error al descargar el archivo EPW.")
-                        except Exception as e:
-                            st.error(f"Error procesando clima: {e}")
-            else:
-                st.warning("No se encontraron estaciones en el rango.")
+        st.write(f"📍 **Coordenadas del Proyecto:** {st.session_state.lat_lon[0]:.3f}, {st.session_state.lat_lon[1]:.3f}")
+        
+        # Confirmación de clima cargado (Sobrevive a reinicios)
+        if st.session_state.clima_data:
+            st.success(f"✅ Clima Activo: **{st.session_state.estacion_seleccionada}**")
         else:
-            st.info("👈 Haz clic en el mapa para ubicar tu proyecto.")
+            st.warning("⚠️ El proyecto aún no tiene clima cargado.")
+
+        if df_estaciones is not None and not df_estaciones.empty:
+            st.markdown("### Estación Recomendada:")
+            mejor_est = df_estaciones.iloc[0]
+            nombre_optimo = mejor_est.get('name', mejor_est.get('Estación', 'Estación EPW'))
+            dist_optima = mejor_est.get('distancia_km', 0)
+            url_optima = mejor_est.get('epw', mejor_est.get('URL_ZIP'))
+            
+            st.info(f"**{nombre_optimo}**\n\nDistancia: {dist_optima} km")
+            
+            if st.button("📥 Descargar EPW y Cargar Clima", type="primary"):
+                with st.spinner("Descargando e inyectando datos climáticos..."):
+                    try:
+                        epw_path = descargar_y_extraer_epw(url_optima)
+                        if epw_path:
+                            datos_clima = procesar_datos_clima(epw_path)
+                            st.session_state.clima_data = datos_clima
+                            st.session_state.estacion_seleccionada = nombre_optimo
+                            st.rerun() # Obligamos a recargar para que se actualice la alerta verde
+                        else:
+                            st.error("Error al descargar el archivo EPW.")
+                    except Exception as e:
+                        st.error(f"Error procesando clima: {e}")
 
 with tab_3d:
     area_nave = ancho * largo
@@ -191,19 +230,17 @@ with tab_3d:
 with tab_analitica:
     st.subheader("Motor Analítico de Flujo Dividido (Split-Flux)")
 
+    # Ahora sí detectará el clima porque está protegido en session_state
     if st.session_state.clima_data:
         clima = st.session_state.clima_data
         
-        # 1. Recuperar Vectores Climáticos Reales (Integración Jules)
         temp = np.array(clima['temp_seca'])
         dni = np.array(clima['rad_directa'])
-        dhi = np.array(clima['rad_difusa'])
+        dhi = np.array(clima['rad_dif'])
         
-        # Matemáticas Climáticas: Reconstruir GHI
         ghi = dni + dhi 
-        lux = ghi * 115 # Factor de eficacia luminosa aproximado
+        lux = ghi * 115 
         
-        # 2. Configuración de Nave
         cu = 0.85 * (math.exp(-0.12 * ((5 * alto * (ancho + largo)) / (ancho * largo))))
         pot_total_kw = (ancho * largo * lpd_real) / 1000.0
         c_base = pot_total_kw * horario_uso
@@ -215,12 +252,10 @@ with tab_analitica:
 
         with st.spinner("Ejecutando simulación vectorizada de 8,760 horas..."):
             for s in sfr_range:
-                # -- BALANCE LUMÍNICO --
                 e_t = lux * s * 0.65 * cu
                 c_t = (np.clip(300 - e_t, 0, 300) / 300) * pot_total_kw * horario_uso
                 ah_l = np.sum(c_base) - np.sum(c_t)
                 
-                # -- BALANCE TÉRMICO --
                 q_solar = (ghi * (ancho * largo * s) * datos_domo['SHGC'])
                 q_cond = (ancho * largo * s) * (datos_domo['U_Value'] - u_techo_real) * (temp - 22.0)
                 q_luces_evitado = (pot_total_kw * horario_uso - c_t) * 1000 
@@ -232,8 +267,6 @@ with tab_analitica:
                 cargas_h.append(-penal_h)
                 netos.append(ah_l - penal_h)
 
-        # 3. Visualización Profesional Plotly
-        
         fig_opt = go.Figure()
         fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=ahorros_l, name='Ahorro Iluminación (kWh)', line=dict(color='#3498db', dash='dash')))
         fig_opt.add_trace(go.Scatter(x=sfr_range*100, y=cargas_h, name='Penalización HVAC (kWh)', line=dict(color='#e74c3c')))
@@ -247,7 +280,6 @@ with tab_analitica:
         fig_opt.update_layout(xaxis_title="Cobertura de Techo (SFR %)", yaxis_title="Impacto Energético Anual (kWh)", hovermode="x unified", template="plotly_white")
         st.plotly_chart(fig_opt, use_container_width=True)
         
-        # 4. KPIs Financieros
         st.divider()
         c1, c2, c3 = st.columns(3)
         sda_proyectado = (np.sum((lux * sfr_target * 0.65 * cu >= 300) & (horario_uso == 1.0)) / np.sum(horario_uso)) * 100
