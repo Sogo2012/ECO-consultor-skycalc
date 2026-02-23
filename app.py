@@ -54,12 +54,17 @@ with tab_config:
             folium.Marker([lat, lon], tooltip="Proyecto", icon=folium.Icon(color='red', icon='home')).add_to(m)
             
             for idx, row in df.iterrows():
-                folium.Marker(
-                    [row['LAT'], row['LON']],
-                    tooltip=f"{row['Estación']} ({row['Distancia (km)']} km)",
-                    popup=row['Estación'],
-                    icon=folium.Icon(color='blue', icon='cloud')
-                ).add_to(m)
+                # Acceso seguro a coordenadas
+                lat_st = row.get('LAT') or row.get('lat') or row.get('latitude')
+                lon_st = row.get('LON') or row.get('lon') or row.get('longitude')
+
+                if lat_st is not None and lon_st is not None:
+                    folium.Marker(
+                        [lat_st, lon_st],
+                        tooltip=f"{row.get('Estación', 'Estación')} ({row.get('Distancia (km)', 0)} km)",
+                        popup=row.get('Estación', 'Estación'),
+                        icon=folium.Icon(color='blue', icon='cloud')
+                    ).add_to(m)
             
             st_folium(m, width=700, height=500)
         else:
@@ -74,10 +79,14 @@ with tab_config:
                     with st.spinner(f"Descargando datos de {row['Estación']}..."):
                         path = descargar_y_extraer_epw(row['URL_ZIP'])
                         if path:
-                            data = procesar_datos_clima(path)
-                            st.session_state.clima_data = data
-                            st.session_state.estacion_seleccionada = row['Estación']
-                            st.success("✅ Datos cargados correctamente.")
+                            try:
+                                data = procesar_datos_clima(path)
+                                st.session_state.clima_data = data
+                                st.session_state.estacion_seleccionada = row['Estación']
+                                st.success("✅ Datos cargados correctamente.")
+                            finally:
+                                if os.path.exists(path):
+                                    os.remove(path)
         
         st.divider()
         st.subheader("Milla Cero (NASA POWER)")
@@ -122,61 +131,3 @@ with tab_reporte:
         st.button("💾 Descargar PDF de Auditoría")
     else:
         st.info("Completa la simulación primero.")
-2. weather_utils.py (Lógica de soporte)
-import pandas as pd
-import json
-import os
-import zipfile
-import urllib.request
-from geopy.distance import geodesic
-from ladybug.epw import EPW
-import shutil
-import tempfile
-
-# Carga la base de datos de ~3000 estaciones
-try:
-    with open('epw_stations.json', 'r') as f:
-        ESTACIONES_MAESTRAS = json.load(f)
-except:
-    ESTACIONES_MAESTRAS = []
-
-def obtener_estaciones_cercanas(lat, lon, n=5):
-    estaciones = []
-    for st in ESTACIONES_MAESTRAS:
-        dist = geodesic((lat, lon), st['location']).km
-        estaciones.append({
-            'Estación': st['name'],
-            'Fuente': st['source'],
-            'Distancia (km)': round(dist, 2),
-            'URL_ZIP': st['epw'],
-            'LAT': st['location'][0],
-            'LON': st['location'][1]
-        })
-    return pd.DataFrame(estaciones).sort_values('Distancia (km)').head(n)
-
-def descargar_y_extraer_epw(url_zip):
-    temp_dir = tempfile.mkdtemp()
-    zip_path = os.path.join(temp_dir, "clima.zip")
-    try:
-        urllib.request.urlretrieve(url_zip, zip_path)
-        with zipfile.ZipFile(zip_path, 'r') as z:
-            z.extractall(temp_dir)
-        for root, dirs, files in os.walk(temp_dir):
-            for file in files:
-                if file.endswith('.epw'):
-                    target_path = os.path.join(os.getcwd(), "clima_actual.epw")
-                    shutil.copy(os.path.join(root, file), target_path)
-                    return target_path
-    except: return None
-    finally: shutil.rmtree(temp_dir)
-
-def procesar_datos_clima(epw_path):
-    try:
-        epw = EPW(epw_path)
-        return {
-            'ciudad': epw.location.city,
-            'pais': epw.location.country,
-            'temp_seca': epw.dry_bulb_temperature.values,
-            'rad_directa': epw.direct_normal_radiation.values
-        }
-    except: return None

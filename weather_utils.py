@@ -1,99 +1,186 @@
+
 import json
 import requests
 import os
 import zipfile
 import urllib.request
 from geopy.distance import geodesic
+from geopy.geocoders import Nominatim, Photon
 import pandas as pd
-
-# Hardcoded major stations for Costa Rica and some others for the demo
-# In a real scenario, this would be a large JSON or fetched from a working URL
-SAMPLE_STATIONS = [
-    {
-        "name": "San Jose Santamaria Intl AP",
-        "location": [9.998, -84.211],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_4_North_and_Central_America/CRI_Costa_Rica/CRI_AL_San.Jose-Santamaria.Intl.AP.787620_TMYx.2009-2023.zip"
-    },
-    {
-        "name": "Limon Intl AP",
-        "location": [9.957, -83.022],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_4_North_and_Central_America/CRI_Costa_Rica/CRI_LI_Limon.Intl.AP.787670_TMYx.2009-2023.zip"
-    },
-    {
-        "name": "Liberia Intl AP",
-        "location": [10.593, -85.544],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_4_North_and_Central_America/CRI_Costa_Rica/CRI_GU_Quiros-Liberia.Intl.AP.787740_TMYx.2009-2023.zip"
-    },
-    {
-        "name": "Mexico City Intl AP",
-        "location": [19.436, -99.072],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_4_North_and_Central_America/MEX_Mexico/DF_Distrito_Federal/MEX_DF_Mexico.City-Juarez.Intl.AP.766790_TMYx.2009-2023.zip"
-    },
-    {
-        "name": "Queretaro Intl AP",
-        "location": [20.617, -100.186],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_4_North_and_Central_America/MEX_Mexico/QA_Queretaro/MEX_QA_Queretaro.Intl.AP.766250_TMYx.2009-2023.zip"
-    },
-    {
-        "name": "Bogota Eldorado Intl AP",
-        "location": [4.701, -74.146],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_3_South_America/COL_Colombia/DC_Bogota/COL_DC_Bogota-Eldorado.Intl.AP.802220_TMYx.2009-2023.zip"
-    },
-    {
-        "name": "Madrid Barajas Intl AP",
-        "location": [40.472, -3.560],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_6_Europe/ESP_Spain/MD_Madrid/ESP_MD_Madrid-Barajas.Intl.AP.082210_TMYx.2009-2023.zip"
-    },
-    {
-        "name": "Miami Intl AP",
-        "location": [25.793, -80.290],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_4_North_and_Central_America/USA_United_States_of_America/FL_Florida/USA_FL_Miami.Intl.AP.722020_TMYx.2009-2023.zip"
-    },
-    {
-        "name": "London Heathrow Intl AP",
-        "location": [51.470, -0.454],
-        "source": "OneBuilding",
-        "epw": "https://climate.onebuilding.org/WMO_Region_6_Europe/GBR_United_Kingdom/ENG_England/GBR_ENG_London.Heathrow.Intl.AP.037720_TMYx.2009-2023.zip"
-    }
-]
-
-def obtener_estaciones_cercanas(lat, lon, top_n=5):
-    """
-    Busca las estaciones más cercanas a las coordenadas dadas.
-    Actualmente usa una lista local de ejemplo.
-    """
-    estaciones_con_distancia = []
-    for st in SAMPLE_STATIONS:
-        dist = geodesic((lat, lon), st['location']).km
-        st_copy = st.copy()
-        st_copy['distancia_km'] = round(dist, 2)
-        estaciones_con_distancia.append(st_copy)
-    
-    # Ordenar por distancia
-    df = pd.DataFrame(estaciones_con_distancia).sort_values('distancia_km')
-    return df.head(top_n)
-
+from ladybug.epw import EPW
 import shutil
 import tempfile
+from bs4 import BeautifulSoup
+import urllib.parse
+import re
+import random
+import time
+
+# Load mapping of countries to OneBuilding URLs
+try:
+    with open("onebuilding_mapping.json", "r") as f:
+        ONEBUILDING_MAPPING = json.load(f)
+except FileNotFoundError:
+    ONEBUILDING_MAPPING = {}
+
+def get_location_info(lat, lon):
+    """Retorna información de ubicación (país, ciudad) usando geocoding inverso."""
+    # Intentar con Photon primero (suele ser más permisivo con 429)
+    try:
+        geolocator = Photon(user_agent="skycalc_explorer_v5")
+        location = geolocator.reverse(f"{lat}, {lon}", timeout=10)
+        if location and 'properties' in location.raw:
+            props = location.raw['properties']
+            country = props.get('country')
+            city = props.get('city') or props.get('name')
+            return country, city
+    except:
+        pass
+
+    # Fallback a Nominatim con un user agent único
+    try:
+        ua = f"skycalc_agent_{random.randint(1000, 9999)}"
+        geolocator = Nominatim(user_agent=ua)
+        location = geolocator.reverse(f"{lat}, {lon}", language='en', timeout=10)
+        if location and 'address' in location.raw:
+            addr = location.raw['address']
+            country = addr.get('country')
+            city = addr.get('city') or addr.get('town') or addr.get('village') or addr.get('suburb')
+            return country, city
+    except Exception as e:
+        print(f"Error en geocoding: {e}")
+    return None, None
+
+def extract_city_from_filename(filename):
+    """
+    Intenta extraer el nombre de la ciudad del formato de OneBuilding.
+    Ejemplo: MEX_CMX_Cuidad.Mexico-Mexico.City.Intl.AP-Juarez.Intl.AP.766793_TMYx.zip
+    """
+    # Quitar extensiones
+    name = filename.split('/')[-1].replace('.zip', '')
+    # Quitar sufijos comunes
+    name = re.sub(r'\.7\d{5}.*', '', name) # Quitar ID de WMO y años
+    name = re.sub(r'_TMYx.*', '', name)
+    
+    # Split por _
+    parts = name.split('_')
+    if len(parts) >= 3:
+        # Suele ser PAIS_ESTADO_CIUDAD
+        city = parts[2]
+    elif len(parts) == 2:
+        city = parts[1]
+    else:
+        city = parts[0]
+
+    return city.replace('.', ' ').replace('-', ' ')
+
+def obtener_estaciones_cercanas(lat, lon, top_n=5):
+    country, city_target = get_location_info(lat, lon)
+    if not country:
+        country = "Mexico"
+
+    country_url = None
+    for name, url in ONEBUILDING_MAPPING.items():
+        if country.lower() in name.lower() or name.lower() in country.lower():
+            country_url = url
+            break
+
+    if not country_url:
+        return pd.DataFrame()
+
+    try:
+        resp = requests.get(country_url, timeout=15)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        links = soup.find_all('a', href=True)
+
+        estaciones = []
+        seen_base_names = set()
+
+        for link in links:
+            href = link['href']
+            if href.endswith('.zip') and 'TMYx' in href:
+                # Filtrar versiones (usar la más reciente o base)
+                base_name = re.sub(r'\.\d{4}-\d{4}', '', href)
+                if base_name in seen_base_names:
+                    continue
+                seen_base_names.add(base_name)
+
+                full_url = urllib.parse.urljoin(country_url, href)
+                city_name = extract_city_from_filename(href)
+
+                estaciones.append({
+                    'Estación': base_name.replace('.zip', '').split('/')[-1],
+                    'URL_ZIP': full_url,
+                    'City_Search': city_name
+                })
+
+        if not estaciones:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(estaciones)
+
+        # Estrategia de búsqueda inteligente:
+        # 1. Priorizar estaciones que contengan el nombre de la ciudad objetivo
+        # 2. Si hay pocas, tomar una muestra representativa
+        # 3. Geocodificar solo los candidatos más probables
+
+        candidatos = []
+        if city_target:
+            mask = df['City_Search'].str.contains(city_target, case=False, na=False)
+            candidatos = df[mask].head(10).to_dict('records')
+
+        # Si no hay candidatos por nombre, tomar los primeros 5 como fallback
+        if len(candidatos) < 3:
+            # Evitar duplicados si ya agregamos algunos
+            existing_urls = [c['URL_ZIP'] for c in candidatos]
+            for _, row in df.head(5).iterrows():
+                if row['URL_ZIP'] not in existing_urls:
+                    candidatos.append(row.to_dict())
+
+        # Usar Photon para geocodificar candidatos (más rápido y menos bloqueos)
+        geolocator = Photon(user_agent="skycalc_explorer_v6")
+        verified_estaciones = []
+
+        for cand in candidatos[:10]:
+            try:
+                query = f"{cand['City_Search']}, {country}"
+                loc = geolocator.geocode(query, timeout=5)
+                if loc:
+                    dist = geodesic((lat, lon), (loc.latitude, loc.longitude)).km
+                    verified_estaciones.append({
+                        'Estación': cand['Estación'],
+                        'Distancia (km)': round(dist, 2),
+                        'URL_ZIP': cand['URL_ZIP'],
+                        'LAT': loc.latitude,
+                        'LON': loc.longitude,
+                        'location': [loc.latitude, loc.longitude]
+                    })
+                time.sleep(1) # Respetar rate-limit
+            except:
+                continue
+
+        if verified_estaciones:
+            return pd.DataFrame(verified_estaciones).sort_values('Distancia (km)').head(top_n)
+
+        # Fallback absoluto
+        df['Distancia (km)'] = 0
+        df['LAT'] = lat
+        df['LON'] = lon
+        df['location'] = df.apply(lambda x: [lat, lon], axis=1)
+        return df.head(top_n)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return pd.DataFrame()
 
 def descargar_y_extraer_epw(url_zip):
-    """
-    Descarga un archivo ZIP de clima y extrae el archivo EPW en un directorio temporal único.
-    """
-    temp_dir = tempfile.mkdtemp(prefix="epw_data_")
+    """Descarga ZIP, extrae EPW y lo guarda en un archivo temporal único."""
+    temp_dir = tempfile.mkdtemp(prefix="epw_process_")
     zip_fn = os.path.join(temp_dir, "clima.zip")
-    print(f"📦 Descargando desde {url_zip}...")
-    
     try:
-        # User agent to avoid blocks
         opener = urllib.request.build_opener()
         opener.addheaders = [('User-agent', 'Mozilla/5.0')]
         urllib.request.install_opener(opener)
@@ -101,32 +188,47 @@ def descargar_y_extraer_epw(url_zip):
         
         with zipfile.ZipFile(zip_fn, 'r') as z:
             z.extractall(temp_dir)
-        
-        # Buscar el archivo .epw de forma recursiva (algunos OneBuilding ZIP tienen subcarpetas)
+
         epw_files = []
         for root, _, files in os.walk(temp_dir):
             for f in files:
                 if f.endswith('.epw'):
                     epw_files.append(os.path.join(root, f))
-        
+
         if not epw_files:
-            raise Exception("No se encontró ningún archivo .epw en el ZIP.")
+            return None
+
+        # Crear archivo temporal único para el EPW
+        fd, target_path = tempfile.mkstemp(suffix=".epw", prefix="skycalc_")
+        os.close(fd)
+        shutil.copy(epw_files[0], target_path)
+        return target_path
         
-        # Retornar el primer archivo EPW encontrado
-        return epw_files[0]
     except Exception as e:
-        # Limpiar en caso de error
+        print(f"Error en descarga/extracción: {e}")
+        return None
+    finally:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-        raise Exception(f"Error al descargar o extraer EPW: {e}")
 
-if __name__ == "__main__":
-    # Test with Juan Santamaria Airport
-    lat, lon = 9.998, -84.211
-    print(f"Buscando estaciones cerca de {lat}, {lon}...")
-    cercanas = obtener_estaciones_cercanas(lat, lon)
-    print(cercanas[['name', 'distancia_km']])
-    
-    mejor = cercanas.iloc[0]
-    epw_path = descargar_y_extraer_epw(mejor['epw'])
-    print(f"EPW extraído en: {epw_path}")
+def procesar_datos_clima(epw_path):
+    try:
+        epw = EPW(epw_path)
+        return {
+            'metadata': {
+                'ciudad': epw.location.city,
+                'pais': epw.location.country,
+                'lat': epw.location.latitude,
+                'lon': epw.location.longitude,
+            },
+            'ciudad': epw.location.city,
+            'pais': epw.location.country,
+            'temp_seca': epw.dry_bulb_temperature.values,
+            'hum': epw.relative_humidity.values,
+            'rad_directa': epw.direct_normal_radiation.values,
+            'rad_dir': epw.direct_normal_radiation.values,
+            'rad_dif': epw.diffuse_horizontal_radiation.values
+        }
+    except Exception as e:
+        print(f"Error: {e}")
+        return None

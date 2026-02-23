@@ -12,3 +12,4 @@ honeybee-core
 honeybee-energy
 requests
 lxml
+beautifulsoup4
