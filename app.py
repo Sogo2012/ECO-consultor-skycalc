@@ -36,7 +36,7 @@ def buscar_estaciones():
     with st.spinner("Buscando estaciones cercanas..."):
         df_cercanas = obtener_estaciones_cercanas(st.session_state.lat, st.session_state.lon)
         st.session_state.df_cercanas = df_cercanas
-        if df_cercanas.empty:
+        if df_cercanas is None or df_cercanas.empty:
             st.error("No se encontraron estaciones para esta ubicación.")
         else:
             st.success(f"Encontradas {len(df_cercanas)} estaciones.")
@@ -48,7 +48,6 @@ with st.sidebar:
     
     st.subheader("🔍 Métodos de Búsqueda")
     
-    # Método 1: Búsqueda por nombre (Desactivado temporalmente si no tienes geocode_name importado, usamos el general)
     search_name = st.text_input("Buscar por ciudad o país", placeholder="Ej: Madrid, España")
     if st.button("🔍 Buscar por Nombre"):
         if search_name:
@@ -67,7 +66,6 @@ with st.sidebar:
 
     st.divider()
     
-    # Método 2: Búsqueda por coordenadas
     st.subheader("📍 Coordenadas Exactas")
     st.session_state.lat = st.number_input("Latitud", value=st.session_state.lat, format="%.4f")
     st.session_state.lon = st.number_input("Longitud", value=st.session_state.lon, format="%.4f")
@@ -81,7 +79,7 @@ with st.sidebar:
 # Tabs principales
 tab_config, tab_clima, tab_analitica, tab_reporte = st.tabs(["🌍 Selección de Clima", "🌤️ Contexto Climático", "📊 Simulación Energética", "📄 Reporte Final"])
 
-# --- PESTAÑA 1: MAPA Y DESCARGA (Lo que faltaba) ---
+# --- PESTAÑA 1: MAPA Y DESCARGA ---
 with tab_config:
     col1, col2 = st.columns([2, 1])
     
@@ -94,18 +92,17 @@ with tab_config:
 
         if st.session_state.df_cercanas is not None and not st.session_state.df_cercanas.empty:
             for idx, st_row in st.session_state.df_cercanas.iterrows():
-                l_est = st_row.get('lat')
-                ln_est = st_row.get('lon')
+                l_est = st_row.get('Lat') or st_row.get('lat')
+                ln_est = st_row.get('Lon') or st_row.get('lon')
                 if pd.notna(l_est) and pd.notna(ln_est):
                     folium.Marker(
                         [l_est, ln_est],
-                        tooltip=f"{st_row['name']} ({st_row['distancia_km']} km)",
+                        tooltip=f"{st_row.get('name', 'Estación')} ({st_row.get('distancia_km', 0)} km)",
                         icon=folium.Icon(color='blue', icon='cloud')
                     ).add_to(m)
 
         output = st_folium(m, width=700, height=500, use_container_width=True, key="mapa_estaciones")
 
-        # Lógica de clic en el mapa
         if output and output.get("last_clicked"):
             c_lat = output["last_clicked"]["lat"]
             c_lon = output["last_clicked"]["lng"]
@@ -123,9 +120,11 @@ with tab_config:
         if st.session_state.df_cercanas is not None and not st.session_state.df_cercanas.empty:
             st.write("Selecciona una estación para descargar el .epw:")
             for idx, row in st.session_state.df_cercanas.iterrows():
-                st_name = row.get('name') or f"Estación {idx}"
+                st_name = row.get('name') or row.get('Station') or f"Estación {idx}"
                 st_dist = row.get('distancia_km') or 0
-                url = row.get('epw') # Asegurándonos de usar la llave correcta de weather_utils
+                
+                # CORRECCIÓN VITAL: Conectando con la etiqueta de Jules
+                url = row.get('URL_ZIP') or row.get('epw') 
 
                 with st.container():
                     st.markdown(f"**{st_name}**")
@@ -155,45 +154,48 @@ with tab_clima:
     
     if st.session_state.clima_data and 'vel_viento' in st.session_state.clima_data:
         clima = st.session_state.clima_data
-        md = clima['metadata']
+        md = clima.get('metadata', {})
         
         cols_hvac = st.columns(4)
-        cols_hvac[0].metric("Latitud", f"{md['lat']}°")
-        cols_hvac[1].metric("Elevación", f"{md['elevacion']} m")
-        cols_hvac[2].metric("Humedad Relativa Media", f"{round(sum(clima['hum_relativa'])/8760, 1)} %")
-        cols_hvac[3].metric("Velocidad Viento Media", f"{round(sum(clima['vel_viento'])/8760, 1)} m/s")
+        cols_hvac[0].metric("Latitud", f"{md.get('lat', st.session_state.lat)}°")
+        # CORRECCIÓN VITAL: Conectando variables de Jules
+        cols_hvac[1].metric("Elevación", f"{clima.get('elevacion', 0)} m")
+        cols_hvac[2].metric("Humedad Relativa Media", f"{round(sum(clima.get('hum', [0]))/8760, 1)} %")
+        cols_hvac[3].metric("Velocidad Viento Media", f"{round(sum(clima.get('vel_viento', [0]))/8760, 1)} m/s")
         
         st.divider()
         col_graf_1, col_graf_2 = st.columns(2)
         
         with col_graf_1:
             st.markdown("### 🌬️ Rosa de los Vientos Anual")
-            df_viento = pd.DataFrame({'dir': clima['dir_viento'], 'vel': clima['vel_viento']})
-            df_viento = df_viento[df_viento['vel'] > 0.5] 
-            
-            bins_dir = np.arange(-11.25, 371.25, 22.5)
-            labels_dir = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW','N2']
-            df_viento['Dir_Cat'] = pd.cut(df_viento['dir'], bins=bins_dir, labels=labels_dir, right=False)
-            df_viento['Dir_Cat'] = df_viento['Dir_Cat'].replace('N2', 'N')
-            
-            bins_vel = [0, 2, 4, 6, 8, 20]
-            labels_vel = ['0-2 m/s', '2-4 m/s', '4-6 m/s', '6-8 m/s', '>8 m/s']
-            df_viento['Vel_Cat'] = pd.cut(df_viento['vel'], bins=bins_vel, labels=labels_vel)
-            
-            df_rose = df_viento.groupby(['Dir_Cat', 'Vel_Cat']).size().reset_index(name='Frecuencia')
-            
-            fig_rose = px.bar_polar(df_rose, r="Frecuencia", theta="Dir_Cat", color="Vel_Cat",
-                                    color_discrete_sequence=px.colors.sequential.Plasma_r,
-                                    template="plotly_white")
-            fig_rose.update_layout(margin=dict(t=20, b=20, l=20, r=20))
-            st.plotly_chart(fig_rose, use_container_width=True)
+            df_viento = pd.DataFrame({'dir': clima.get('dir_viento', []), 'vel': clima.get('vel_viento', [])})
+            if not df_viento.empty:
+                df_viento = df_viento[df_viento['vel'] > 0.5] 
+                
+                bins_dir = np.arange(-11.25, 371.25, 22.5)
+                labels_dir = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW','N2']
+                df_viento['Dir_Cat'] = pd.cut(df_viento['dir'], bins=bins_dir, labels=labels_dir, right=False)
+                df_viento['Dir_Cat'] = df_viento['Dir_Cat'].replace('N2', 'N')
+                
+                bins_vel = [0, 2, 4, 6, 8, 20]
+                labels_vel = ['0-2 m/s', '2-4 m/s', '4-6 m/s', '6-8 m/s', '>8 m/s']
+                df_viento['Vel_Cat'] = pd.cut(df_viento['vel'], bins=bins_vel, labels=labels_vel)
+                
+                df_rose = df_viento.groupby(['Dir_Cat', 'Vel_Cat']).size().reset_index(name='Frecuencia')
+                
+                fig_rose = px.bar_polar(df_rose, r="Frecuencia", theta="Dir_Cat", color="Vel_Cat",
+                                        color_discrete_sequence=px.colors.sequential.Plasma_r,
+                                        template="plotly_white")
+                fig_rose.update_layout(margin=dict(t=20, b=20, l=20, r=20))
+                st.plotly_chart(fig_rose, use_container_width=True)
 
         with col_graf_2:
             st.markdown("### ☀️ Balance de Irradiación")
             st.caption("Justificación técnica para domos prismáticos de alta difusión.")
             
-            suma_directa = sum(clima['rad_directa'])
-            suma_difusa = sum(clima['rad_dif'])
+            # CORRECCIÓN VITAL: 'rad_difusa' en lugar de 'rad_dif'
+            suma_directa = sum(clima.get('rad_directa', [0]))
+            suma_difusa = sum(clima.get('rad_difusa', [0]))
             
             fig_pie = go.Figure(data=[go.Pie(labels=['Radiación Directa (Luz Dura)', 'Radiación Difusa (Luz Suave)'],
                                              values=[suma_directa, suma_difusa], hole=.4,
@@ -217,7 +219,7 @@ with tab_analitica:
         
         temp_data = clima.get('temp_seca', [])
         rad_data = clima.get('rad_directa', [])
-        rad_dif = clima.get('rad_dif', [])
+        rad_dif = clima.get('rad_difusa', [])
 
         if len(temp_data) > 0:
             c1, c2, c3 = st.columns(3)
