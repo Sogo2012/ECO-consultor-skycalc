@@ -63,6 +63,8 @@ with tab_config:
                         [lat_st, lon_st],
                         tooltip=f"{row.get('Estación', 'Estación')} ({row.get('Distancia (km)', 0)} km)",
                         popup=row.get('Estación', 'Estación'),
+                        tooltip=f"{row['Estación']} ({row['Distancia (km)']} km)",
+                        popup=row['Estación'],
                         icon=folium.Icon(color='blue', icon='cloud')
                     ).add_to(m)
             
@@ -96,7 +98,7 @@ with tab_config:
 
 with tab_analitica:
     st.subheader("Motor de Cálculo SkyCalc")
-    
+
     if st.session_state.clima_data:
         clima = st.session_state.clima_data
         st.info(f"Analizando: **{clima['ciudad']}, {clima['pais']}** (vía {st.session_state.estacion_seleccionada})")
@@ -107,15 +109,15 @@ with tab_analitica:
         c3.metric("Horas de Análisis", "8760 h")
         
         st.divider()
-        
+
         if st.button("🔥 EJECUTAR SIMULACIÓN"):
             with st.spinner("Calculando demanda térmica..."):
                 import time
-                time.sleep(2) 
+                time.sleep(2)
                 st.session_state.calculo_completado = True
                 st.balloons()
                 st.success("Cálculo completado.")
-                
+
         if getattr(st.session_state, 'calculo_completado', False):
             st.write("### Resultados de la Optimización")
             df_temp = pd.DataFrame({'Temperatura (°C)': clima['temp_seca'][:168]})
