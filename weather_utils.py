@@ -1,4 +1,3 @@
-
 import json
 import requests
 import os
@@ -155,7 +154,8 @@ def obtener_estaciones_cercanas(lat, lon, top_n=5):
                         'Distancia (km)': round(dist, 2),
                         'URL_ZIP': cand['URL_ZIP'],
                         'LAT': loc.latitude,
-                        'LON': loc.longitude
+                        'LON': loc.longitude,
+                        'location': [loc.latitude, loc.longitude]
                     })
                 time.sleep(1) # Respetar rate-limit
             except:
@@ -168,6 +168,7 @@ def obtener_estaciones_cercanas(lat, lon, top_n=5):
         df['Distancia (km)'] = 0
         df['LAT'] = lat
         df['LON'] = lon
+        df['location'] = df.apply(lambda x: [lat, lon], axis=1)
         return df.head(top_n)
 
     except Exception as e:
