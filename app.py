@@ -207,7 +207,21 @@ with tab_clima:
                                              marker_colors=['#f39c12', '#bdc3c7'])])
             fig_pie.update_layout(margin=dict(t=20, b=20, l=20, r=20), template="plotly_white")
             st.plotly_chart(fig_pie, use_container_width=True)
-            
+            st.divider()
+        st.markdown("### ☁️ Termodinámica y Nubosidad (Análisis BEM)")
+        
+        # 1. Cálculo rápido de Grados Día (Base 18.3°C / 65°F estándar ASHRAE)
+        temp_diaria = np.array([sum(clima['temp_seca'][i:i+24])/24 for i in range(0, 8760, 24)])
+        cdd_anual = sum([t - 18.3 for t in temp_diaria if t > 18.3])
+        hdd_anual = sum([18.3 - t for t in temp_diaria if t < 18.3])
+        
+        # 2. Cálculo de Nubosidad Media (Viene en escala 0-10, lo pasamos a %)
+        nubosidad_media = (sum(clima['nubes']) / 8760) * 10 
+
+        col_termo1, col_termo2, col_termo3 = st.columns(3)
+        col_termo1.metric("Grados Día Refrigeración (CDD)", f"{int(cdd_anual)}", "Demanda de Aire Acondicionado", delta_color="inverse")
+        col_termo2.metric("Grados Día Calefacción (HDD)", f"{int(hdd_anual)}", "Demanda de Calefacción")
+        col_termo3.metric("Cobertura de Nubes Promedio", f"{int(nubosidad_media)} %", "Ideal para lentes prismáticos")
     else:
         st.warning("⚠️ Descarga un archivo climático en la pestaña 'Selección de Clima' para ver el análisis bioclimático.")
 
