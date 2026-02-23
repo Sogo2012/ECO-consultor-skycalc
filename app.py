@@ -61,6 +61,8 @@ with tab_config:
                 if lat_st is not None and lon_st is not None:
                     folium.Marker(
                         [lat_st, lon_st],
+                        tooltip=f"{row.get('Estación', 'Estación')} ({row.get('Distancia (km)', 0)} km)",
+                        popup=row.get('Estación', 'Estación'),
                         tooltip=f"{row['Estación']} ({row['Distancia (km)']} km)",
                         popup=row['Estación'],
                         icon=folium.Icon(color='blue', icon='cloud')
