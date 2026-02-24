@@ -311,7 +311,8 @@ with tab_3d:
             datos_domo = df_domos[df_domos['Modelo'] == modelo_sel].iloc[0]
             vtk_path, num_domos, sfr_real = generar_nave_3d_vtk(
                 ancho_nave, largo_nave, alto_nave, sfr_target, 
-                datos_domo['Ancho_m'], datos_domo['Largo_m']
+                datos_domo['Ancho_m'], datos_domo['Largo_m'],
+                lat=st.session_state.lat, lon=st.session_state.lon
             )
             if vtk_path:
                 st.session_state.vtk_path = vtk_path
@@ -330,7 +331,8 @@ with tab_3d:
         with cmet:
             st.metric("Domos", f"{st.session_state.num_domos_real} uds")
             st.metric("SFR Real", f"{st.session_state.sfr_final*100:.2f} %")
-            st.download_button("💾 Descargar .vtkjs", data=open(st.session_state.vtk_path, "rb"), file_name="nave.vtkjs")
+            # El botón de descarga fue eliminado intencionalmente (Estrategia Lead Magnet)
+            st.info("💡 El modelo y el análisis detallado se incluirán en su Reporte Final.")
     else:
         st.info("Configura la nave y presiona 'Generar Modelo 3D'.")
 
