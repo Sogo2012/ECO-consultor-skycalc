@@ -1,3 +1,4 @@
+# geometry_utils.py
 import math
 import pathlib
 from ladybug_geometry.geometry3d.pointvector import Point3D
@@ -10,20 +11,24 @@ from honeybee.aperture import Aperture
 from honeybee_vtk.model import Model as VTKModel
 
 def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_largo_m):
-    """Genera la geometría y exporta un archivo .vtkjs para Streamlit"""
+    """Genera la geometría paramétrica y exporta un archivo .vtkjs para Streamlit"""
     
-    # 1. Crear piso y volumen
+    print(f"Generando modelo 3D: {ancho}x{largo}x{altura} - SFR: {sfr_objetivo}")
+    
+    # 1. Crear piso y volumen (Masa térmica)
     puntos_piso = [Point3D(0, 0, 0), Point3D(ancho, 0, 0), Point3D(ancho, largo, 0), Point3D(0, largo, 0)]
     room_df = Room2D('Nave_Principal', Face3D(puntos_piso), floor_to_ceiling_height=altura)
     story = Story('Nivel_0', room_2ds=[room_df])
     building = Building('Planta_Industrial', unique_stories=[story])
     
-    # 2. Pasar a Honeybee
+    # 2. Pasar a Honeybee para inyectar física
     hb_model = DFModel('Modelo_Nave', buildings=[building]).to_honeybee(object_per_model='Building')[0]
     hb_room = hb_model.rooms[0]
+    
+    # Identificamos el techo
     techo = [f for f in hb_room.faces if f.type.name == 'RoofCeiling'][0]
     
-    # 3. Algoritmo de Cuadrícula de Domos
+    # 3. Algoritmo de Cuadrícula de Domos Sunoptics
     area_domo = domo_ancho_m * domo_largo_m
     area_nave = ancho * largo
     num_domos = max(1, math.ceil((area_nave * sfr_objetivo) / area_domo))
@@ -36,28 +41,34 @@ def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_l
     for i in range(cols):
         for j in range(filas):
             if contador > num_domos: break
+            
+            # Centro de la celda
             cx = (i * dx) + (dx / 2)
             cy = (j * dy) + (dy / 2)
             
+            # 4 vértices del domo
             pt1 = Point3D(cx - domo_ancho_m/2, cy - domo_largo_m/2, altura)
             pt2 = Point3D(cx + domo_ancho_m/2, cy - domo_largo_m/2, altura)
             pt3 = Point3D(cx + domo_ancho_m/2, cy + domo_largo_m/2, altura)
             pt4 = Point3D(cx - domo_ancho_m/2, cy + domo_largo_m/2, altura)
             
+            # Instanciar apertura y pegarla al techo
             cara_domo = Face3D([pt1, pt2, pt3, pt4])
             techo.add_aperture(Aperture(f"Domo_{contador}", cara_domo))
             contador += 1
 
     # 4. CONVERSIÓN A 3D VTK
-    # Creamos la carpeta 'data' si no existe
     vtk_file = pathlib.Path('data', 'nave_industrial.vtkjs')
     vtk_file.parent.mkdir(parents=True, exist_ok=True)
     
-    # Traducir a VTK y guardar
-    vtk_model = VTKModel(hb_model)
-    vtk_model.to_vtkjs(folder=vtk_file.parent, name=vtk_file.stem)
+    try:
+        vtk_model = VTKModel(hb_model)
+        vtk_model.to_vtkjs(folder=vtk_file.parent, name=vtk_file.stem)
+    except Exception as e:
+        print(f"Error al generar VTK: {e}")
+        return None, 0, 0
     
-    # Calcular métricas finales
+    # Calcular métricas finales de comprobación
     area_domos = sum([ap.area for ap in techo.apertures])
     sfr_real = (area_domos / techo.area)
     
