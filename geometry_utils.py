@@ -25,19 +25,20 @@ def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_l
         techo = [f for f in hb_room.faces if f.type.name == 'RoofCeiling'][0]
         techo.boundary_condition = Outdoors() 
         
-        # 4. Algoritmo de Cuadrícula (Lógica validada en Colab)
+        # 4. Algoritmo de Cuadrícula (Homologado a la versión 2D impecable)
         area_domo = domo_ancho_m * domo_largo_m
         area_nave = ancho * largo
-        num_domos = max(1, math.ceil((area_nave * sfr_objetivo) / area_domo))
+        num_domos_teoricos = max(1, math.ceil((area_nave * sfr_objetivo) / area_domo))
         
-        cols = max(1, round((num_domos * (ancho / largo)) ** 0.5))
-        filas = max(1, math.ceil(num_domos / cols))
+        cols = max(1, round((num_domos_teoricos * (ancho / largo)) ** 0.5))
+        filas = max(1, math.ceil(num_domos_teoricos / cols))
+        
         dx, dy = ancho / cols, largo / filas
         contador = 1
         
+        # LA MAGIA: Eliminamos el 'break' para forzar la simetría completa (cols * filas)
         for i in range(cols):
             for j in range(filas):
-                if contador > num_domos: break
                 cx = (i * dx) + (dx / 2)
                 cy = (j * dy) + (dy / 2)
                 
@@ -46,17 +47,30 @@ def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_l
                 pt3 = Point3D(cx + domo_ancho_m/2, cy + domo_largo_m/2, altura)
                 pt4 = Point3D(cx - domo_ancho_m/2, cy + domo_largo_m/2, altura)
                 
-                techo.add_aperture(Aperture(f"Domo_{contador}", Face3D([pt1, pt2, pt3, pt4])))
+                cara_domo = Face3D([pt1, pt2, pt3, pt4])
+                techo.add_aperture(Aperture(f"Domo_{contador}", cara_domo))
                 contador += 1
 
-        # 5. Exportar a VTKJS para el visor
+        # ==========================================
+        # 5. VALIDACIÓN OFICIAL PARA LBT (EnergyPlus / Radiance)
+        # ==========================================
+        reporte_validacion = hb_model.check_all()
+        if reporte_validacion:
+            print(f"⚠️ El modelo tiene problemas LBT: {reporte_validacion}")
+        else:
+            print("✅ GEOMETRÍA PERFECTA: Modelo LBT 100% válido para simulación.")
+
+        # 6. EXPORTAR A VTK PARA EL VISOR 3D DE STREAMLIT
         vtk_file = pathlib.Path('data', 'nave_industrial.vtkjs')
         vtk_file.parent.mkdir(parents=True, exist_ok=True)
         
         vtk_model = VTKModel(hb_model)
         vtk_model.to_vtkjs(folder=vtk_file.parent, name=vtk_file.stem)
         
-        sfr_real = (sum([ap.area for ap in techo.apertures]) / techo.area)
+        # Cálculo final de métricas 
+        area_domos_total = sum([ap.area for ap in techo.apertures])
+        sfr_real = (area_domos_total / techo.area)
+        
         return str(vtk_file), len(techo.apertures), sfr_real
 
     except Exception as e:
