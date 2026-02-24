@@ -11,10 +11,10 @@ geopy
 requests
 lxml
 beautifulsoup4
-ladybug-core
-ladybug-geometry
-honeybee-core
-honeybee-energy
-honeybee-vtk
-dragonfly-core
-streamlit-vtkjs
+ladybug-core==0.43.18
+ladybug-geometry==1.33.11
+honeybee-core==1.60.0
+honeybee-energy==1.109.27
+honeybee-vtk==0.39.1
+dragonfly-core==1.57.11
+streamlit-vtkjs==0.3.2
