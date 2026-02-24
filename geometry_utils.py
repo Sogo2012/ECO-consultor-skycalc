@@ -9,7 +9,7 @@ from honeybee.aperture import Aperture
 from honeybee.boundarycondition import Outdoors # Clase con Mayúscula
 from honeybee_vtk.model import Model as VTKModel
 
-def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_largo_m):
+def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_largo_m, lat=None, lon=None):
     try:
         # 1. Crear piso y volumen
         puntos_piso = [Point3D(0, 0, 0), Point3D(ancho, 0, 0), Point3D(ancho, largo, 0), Point3D(0, largo, 0)]
@@ -60,12 +60,52 @@ def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_l
         else:
             print("✅ GEOMETRÍA PERFECTA: Modelo LBT 100% válido para simulación.")
 
-        # 6. EXPORTAR A VTK PARA EL VISOR 3D DE STREAMLIT
+       # 6. EXPORTAR A VTK (BEM + SUNPATH)
         vtk_file = pathlib.Path('data', 'nave_industrial.vtkjs')
         vtk_file.parent.mkdir(parents=True, exist_ok=True)
         
-        vtk_model = VTKModel(hb_model)
-        vtk_model.to_vtkjs(folder=vtk_file.parent, name=vtk_file.stem)
+        try:
+            # Si tenemos coordenadas, intentamos inyectar el Sunpath
+            if lat is not None and lon is not None:
+                from ladybug.sunpath import Sunpath
+                from ladybug_display.visualization.sunpath import SunpathDisplay
+                from honeybee_display.model import model_to_vis_set
+                
+                # A) Crear el motor solar con las coordenadas
+                sp = Sunpath(latitude=lat, longitude=lon)
+                
+                # B) Centroide de la nave (la mitad del ancho y largo, altura 0)
+                centro = Point3D(ancho / 2, largo / 2, 0)
+                
+                # C) Radio de la bóveda (70% de la diagonal geométrica para que "abrace" la nave)
+                radio = math.sqrt(ancho**2 + largo**2) * 0.7 
+                
+                # D) Generar la geometría gráfica del Sol
+                sp_display = SunpathDisplay(sp, center=centro, radius=radio)
+                sp_vis_set = sp_display.to_vis_set()
+                
+                # E) Convertir la nave industrial a un set visual y fusionarlos
+                vis_set = model_to_vis_set(hb_model)
+                for geo in sp_vis_set.geometries:
+                    vis_set.add_geometry(geo)
+                    
+                # F) Exportar el conjunto unificado
+                vis_set.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
+                
+            else:
+                # Exportación clásica (solo edificio) si no llegaron coordenadas
+                vtk_model = VTKModel(hb_model)
+                vtk_model.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
+                
+        except Exception as e:
+            print(f"Aviso Sunpath: No se pudo renderizar la bóveda solar ({e}). Usando renderizado clásico.")
+            # RED DE SEGURIDAD: Si la librería gráfica falla, exportamos el edificio normal.
+            try:
+                vtk_model = VTKModel(hb_model)
+                vtk_model.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
+            except Exception as e2:
+                print(f"Error crítico al generar VTK: {e2}")
+                return None, 0, 0
         
         # Cálculo final de métricas 
         area_domos_total = sum([ap.area for ap in techo.apertures])
