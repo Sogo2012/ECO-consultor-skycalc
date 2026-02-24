@@ -105,7 +105,7 @@ with tab_config:
         
         if st.session_state.df_cercanas is not None:
             for _, row in st.session_state.df_cercanas.iterrows():
-                folium.Marker([row['Lat'], row['Lon']], tooltip=row['name'], icon=folium.Icon(color='blue')).add_to(m)
+                folium.Marker([row['lat'], row['lon']], tooltip=row['name'], icon=folium.Icon(color='blue')).add_to(m)
         
         out = st_folium(m, width=700, height=450, use_container_width=True)
         if out and out.get("last_clicked"):
@@ -146,7 +146,10 @@ with tab_3d:
         c3d, cmet = st.columns([3, 1])
         with c3d:
             with open(st.session_state.vtk_path, "rb") as f:
-                st_vtkjs(f.read(), key="visor_nave")
+                # 1. Leemos el archivo y lo guardamos en una variable
+                vtk_data = f.read()
+            # 2. Pasamos esa variable indicando que es el 'content'
+            st_vtkjs(content=vtk_data, key="visor_nave")
         with cmet:
             st.metric("Domos", f"{st.session_state.num_domos_real} uds")
             st.metric("SFR Real", f"{st.session_state.sfr_final*100:.2f} %")
