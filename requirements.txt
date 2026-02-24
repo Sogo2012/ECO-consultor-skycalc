@@ -12,9 +12,12 @@ requests
 lxml
 beautifulsoup4
 ladybug-core==0.43.18
+streamlit-vtkjs==0.3.2
 ladybug-geometry==1.33.11
+ladybug-display
+ladybug-vtk
 honeybee-core==1.60.0
+honeybee-display
 honeybee-energy==1.109.27
 honeybee-vtk==0.39.1
 dragonfly-core==1.57.11
-streamlit-vtkjs==0.3.2
