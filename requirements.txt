@@ -13,3 +13,5 @@ honeybee-energy
 requests
 lxml
 beautifulsoup4
+streamlit-vtkjs
+honeybee-vtk
