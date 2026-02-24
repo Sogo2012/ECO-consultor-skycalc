@@ -269,7 +269,7 @@ with tab_analitica:
         rad_data = clima.get('rad_directa', [])
         
         # 🟢 CORRECCIÓN VITAL PARA EL MOTOR: 'rad_difusa' en vez de 'rad_dif'
-        rad_dif = clima.get('rad_difusa', [])
+        rad_dif = clima.get('rad_dif', [])
 
         if len(temp_data) > 0:
             c1, c2, c3 = st.columns(3)
