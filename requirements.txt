@@ -6,12 +6,13 @@ plotly
 folium
 streamlit-folium
 geopy
+requests
+lxml
+beautifulsoup4
 ladybug-core
 ladybug-geometry
 honeybee-core
 honeybee-energy
-requests
-lxml
-beautifulsoup4
-streamlit-vtkjs
 honeybee-vtk
+dragonfly-core
+streamlit-vtkjs
