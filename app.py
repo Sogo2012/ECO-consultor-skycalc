@@ -237,19 +237,44 @@ with tab_clima:
         st.divider()
         st.markdown("### ☁️ Termodinámica y Nubosidad (Análisis BEM)")
         
-        # Cálculo rápido de Grados Día
+        # 1. Cálculo rápido de Grados Día (Base 18.3°C / 65°F estándar ASHRAE)
         temp_diaria = np.array([sum(temp_array[i:i+24])/24 for i in range(0, 8760, 24)]) if len(temp_array) == 8760 else np.zeros(365)
         cdd_anual = sum([t - 18.3 for t in temp_diaria if t > 18.3])
         hdd_anual = sum([18.3 - t for t in temp_diaria if t < 18.3])
-        
-        # Cálculo de Nubosidad
-        nubes_array = clima.get('nubes', np.zeros(8760))
-        nubosidad_media = (sum(nubes_array) / 8760) * 10 if len(nubes_array) > 0 else 0
 
-        col_termo1, col_termo2, col_termo3 = st.columns(3)
-        col_termo1.metric("Grados Día Refrigeración (CDD)", f"{int(cdd_anual)}", "Demanda de Aire Acondicionado", delta_color="inverse")
-        col_termo2.metric("Grados Día Calefacción (HDD)", f"{int(hdd_anual)}", "Demanda de Calefacción")
-        col_termo3.metric("Cobertura de Nubes Promedio", f"{int(nubosidad_media)} %", "Ideal para lentes prismáticos")
+        col_t1, col_t2 = st.columns(2)
+        col_t1.metric("Grados Día Refrigeración (CDD)", f"{int(cdd_anual)}", "Demanda de Aire Acondicionado (Frío)", delta_color="inverse")
+        col_t2.metric("Grados Día Calefacción (HDD)", f"{int(hdd_anual)}", "Demanda de Calefacción (Calor)")
+
+        # 2. Gráfico de Estacionalidad de Nubosidad
+        st.markdown("#### ☁️ Perfil de Nubosidad Mensual")
+        st.caption("Porcentaje promedio de cielo cubierto. Los meses grises son donde la tecnología prismática de **Sunoptics®** captura luz en ángulos bajos, superando ampliamente al vidrio o policarbonato liso.")
+        
+        nubes_array = clima.get('nubes', np.zeros(8760))
+        if len(nubes_array) == 8760:
+            # Pandas agrupa mágicamente las 8760 horas en 12 meses
+            fechas = pd.date_range(start="2023-01-01", periods=8760, freq="h")
+            df_nubes = pd.DataFrame({'Fecha': fechas, 'Nubosidad': np.array(nubes_array) * 10}) # Convertimos de 0-10 a 0-100%
+            df_nubes['Mes'] = df_nubes['Fecha'].dt.month
+            nubes_mensual = df_nubes.groupby('Mes')['Nubosidad'].mean()
+            meses_labels = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+            
+            fig_nubes = go.Figure(data=[
+                go.Bar(x=meses_labels, y=nubes_mensual, 
+                       marker_color='#95a5a6', # Un elegante color gris nube
+                       text=[f"{val:.0f}%" for val in nubes_mensual], 
+                       textposition='auto')
+            ])
+            fig_nubes.update_layout(
+                yaxis_title="% Cielo Cubierto", 
+                yaxis=dict(range=[0, 100]), 
+                template="plotly_white", 
+                height=350, 
+                margin=dict(t=20, b=20, l=20, r=20)
+            )
+            st.plotly_chart(fig_nubes, use_container_width=True)
+        else:
+            st.warning("Datos de nubosidad no disponibles en este archivo.")
         
     else:
         st.warning("⚠️ Descarga un archivo climático en la pestaña 'Selección de Clima' para ver el análisis bioclimático.")
