@@ -1,3 +1,5 @@
+from streamlit_vtkjs import st_vtkjs
+from geometry_utils import generar_nave_3d_vtk
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -20,17 +22,39 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# ==========================================
+# BASE DE DATOS MAESTRA: SUNOPTICS
+# ==========================================
+@st.cache_data
+def cargar_catalogo():
+    data = {
+        'Modelo': [
+            'Signature 800MD 4040 SGZ', 'Signature 800MD 4040 DGZ',
+            'Signature 800MD 4070 SGZ', 'Signature 800MD 4070 DGZ',
+            'Signature 800MD 4080 SGZ', 'Signature 800MD 4080 DGZ',
+            'Signature 900SC 4080 (Storm)', 'Smoke Vent SVT2 4080 DGZ'
+        ],
+        'Acristalamiento': ['Sencillo (SGZ)', 'Doble (DGZ)', 'Sencillo (SGZ)', 'Doble (DGZ)', 
+                            'Sencillo (SGZ)', 'Doble (DGZ)', 'Storm Class', 'Doble (DGZ)'],
+        'VLT': [0.74, 0.67, 0.74, 0.67, 0.74, 0.67, 0.52, 0.64],
+        'SHGC': [0.68, 0.48, 0.68, 0.48, 0.68, 0.48, 0.24, 0.31],
+        'U_Value': [5.80, 3.20, 5.80, 3.20, 5.80, 3.20, 2.80, 3.20],
+        'Ancho_in': [51.25, 51.25, 51.25, 51.25, 52.25, 52.25, 52.25, 52.25],
+        'Largo_in': [51.25, 51.25, 87.25, 87.25, 100.25, 100.25, 100.25, 100.25]
+    }
+    df = pd.DataFrame(data)
+    df['Ancho_m'] = (df['Ancho_in'] * 0.0254).round(3)
+    df['Largo_m'] = (df['Largo_in'] * 0.0254).round(3)
+    return df
+
+df_domos = cargar_catalogo()
+
 # Inicialización de estado
-if 'clima_data' not in st.session_state:
-    st.session_state.clima_data = None
-if 'estacion_seleccionada' not in st.session_state:
-    st.session_state.estacion_seleccionada = None
-if 'df_cercanas' not in st.session_state:
-    st.session_state.df_cercanas = None
-if 'lat' not in st.session_state:
-    st.session_state.lat = 20.5888
-if 'lon' not in st.session_state:
-    st.session_state.lon = -100.3899
+if 'clima_data' not in st.session_state: st.session_state.clima_data = None
+if 'estacion_seleccionada' not in st.session_state: st.session_state.estacion_seleccionada = None
+if 'df_cercanas' not in st.session_state: st.session_state.df_cercanas = None
+if 'lat' not in st.session_state: st.session_state.lat = 20.5888
+if 'lon' not in st.session_state: st.session_state.lon = -100.3899
 
 def buscar_estaciones():
     with st.spinner("Buscando estaciones cercanas..."):
@@ -41,44 +65,49 @@ def buscar_estaciones():
         else:
             st.success(f"Encontradas {len(df_cercanas)} estaciones.")
 
-# Sidebar - Configuración del Proyecto
+# ==========================================
+# SIDEBAR - CONFIGURACIÓN DEL PROYECTO
+# ==========================================
 with st.sidebar:
     st.markdown("## 🍃 Eco Consultor")
     st.title("SkyCalc 2.0")
     
-    st.subheader("🔍 Métodos de Búsqueda")
+    # Acordeón de Ubicación (Para ahorrar espacio)
+    with st.expander("📍 1. Ubicación y Clima", expanded=False):
+        search_name = st.text_input("Buscar por ciudad o país", placeholder="Ej: Madrid, España")
+        if st.button("🔍 Buscar por Nombre"):
+            if search_name:
+                from geopy.geocoders import Nominatim
+                try:
+                    geolocator = Nominatim(user_agent="skycalc_buscador_ui")
+                    loc = geolocator.geocode(search_name)
+                    if loc:
+                        st.session_state.lat = loc.latitude
+                        st.session_state.lon = loc.longitude
+                        buscar_estaciones()
+                    else:
+                        st.error("No se pudo localizar ese lugar.")
+                except:
+                    st.error("Error al conectar con el servicio de búsqueda.")
+        st.divider()
+        st.session_state.lat = st.number_input("Latitud", value=st.session_state.lat, format="%.4f")
+        st.session_state.lon = st.number_input("Longitud", value=st.session_state.lon, format="%.4f")
+        if st.button("🚀 Buscar en Coordenadas"):
+            buscar_estaciones()
+
+    st.subheader("📐 2. Geometría de la Nave")
+    st.session_state.ancho = st.number_input("Ancho (m)", 10.0, 500.0, 50.0)
+    st.session_state.largo = st.number_input("Largo (m)", 10.0, 500.0, 100.0)
+    st.session_state.alto = st.number_input("Altura Libre (m)", 3.0, 30.0, 8.0)
     
-    search_name = st.text_input("Buscar por ciudad o país", placeholder="Ej: Madrid, España")
-    if st.button("🔍 Buscar por Nombre"):
-        if search_name:
-            from geopy.geocoders import Nominatim
-            try:
-                geolocator = Nominatim(user_agent="skycalc_buscador_ui")
-                loc = geolocator.geocode(search_name)
-                if loc:
-                    st.session_state.lat = loc.latitude
-                    st.session_state.lon = loc.longitude
-                    buscar_estaciones()
-                else:
-                    st.error("No se pudo localizar ese lugar.")
-            except:
-                st.error("Error al conectar con el servicio de búsqueda.")
+    st.subheader("☀️ 3. Especificación Sunoptics")
+    st.session_state.modelo_sel = st.selectbox("Modelo NFRC", df_domos['Modelo'])
+    st.session_state.sfr_target = st.slider("Objetivo SFR (%)", 1.0, 10.0, 4.0, 0.1) / 100.0
 
-    st.divider()
-    
-    st.subheader("📍 Coordenadas Exactas")
-    st.session_state.lat = st.number_input("Latitud", value=st.session_state.lat, format="%.4f")
-    st.session_state.lon = st.number_input("Longitud", value=st.session_state.lon, format="%.4f")
-
-    if st.button("🚀 Buscar en Coordenadas"):
-        buscar_estaciones()
-
-    st.divider()
-    tipo_analisis = st.selectbox("Tipo de Análisis", ["Residencial", "Comercial", "Industrial"])
-
-# Tabs principales
-tab_config, tab_clima, tab_analitica, tab_reporte = st.tabs(["🌍 Selección de Clima", "🌤️ Contexto Climático", "📊 Simulación Energética", "📄 Reporte Final"])
-
+# Tabs principales (¡AQUÍ AGREGAMOS LA PESTAÑA 3D!)
+tab_config, tab_clima, tab_3d, tab_analitica, tab_reporte = st.tabs([
+    "🌍 Selección de Clima", "🌤️ Contexto Climático", "📐 Geometría 3D", "📊 Simulación Energética", "📄 Reporte Final"
+])
 # --- PESTAÑA 1: MAPA Y DESCARGA ---
 with tab_config:
     col1, col2 = st.columns([2, 1])
@@ -279,54 +308,49 @@ with tab_clima:
     else:
         st.warning("⚠️ Descarga un archivo climático en la pestaña 'Selección de Clima' para ver el análisis bioclimático.")
 
-# --- PESTAÑA 3: MOTOR DE CÁLCULO ---
-with tab_analitica:
-    st.subheader("Motor de Cálculo SkyCalc")
-
-    if st.session_state.clima_data:
-        clima = st.session_state.clima_data
-        ciudad = clima.get('ciudad') or clima.get('metadata', {}).get('ciudad', 'Desconocida')
-        pais = clima.get('pais') or clima.get('metadata', {}).get('pais', 'Desconocido')
-        
-        st.info(f"Analizando: **{ciudad}, {pais}** (vía {st.session_state.estacion_seleccionada})")
-        
-        temp_data = clima.get('temp_seca', [])
-        rad_data = clima.get('rad_directa', [])
-        
-        # 🟢 CORRECCIÓN VITAL PARA EL MOTOR: 'rad_difusa' en vez de 'rad_dif'
-        rad_dif = clima.get('rad_dif', [])
-
-        if len(temp_data) > 0:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Temp. Media", f"{round(sum(temp_data)/len(temp_data), 1)} °C")
-            c2.metric("Rad. Directa Máx", f"{max(rad_data) if len(rad_data) > 0 else 'N/A'} W/m²")
-            c3.metric("Rad. Difusa Máx", f"{max(rad_dif) if len(rad_dif) > 0 else 'N/A'} W/m²")
-
-            st.divider()
-
-            if st.button("🔥 EJECUTAR SIMULACIÓN"):
-                with st.spinner("Calculando demanda térmica..."):
-                    import time
-                    time.sleep(1)
-                    st.session_state.calculo_completado = True
-                    st.balloons()
-                    st.success("Cálculo completado.")
-
-            if getattr(st.session_state, 'calculo_completado', False):
-                st.write("### Resultados de la Optimización")
-                df_temp = pd.DataFrame({'Temperatura (°C)': temp_data[:168]})
-                st.line_chart(df_temp)
-                st.write("Estimación de Ahorro Proyectado: **24.5%**.")
-        else:
-            st.error("Los datos de clima están incompletos.")
+# --- NUEVA PESTAÑA: GEOMETRÍA 3D ---
+with tab_3d:
+    st.subheader("Modelo 3D Paramétrico (Motor Honeybee)")
+    
+    if st.button("🏗️ Generar / Actualizar Modelo 3D", use_container_width=True):
+        with st.spinner("Construyendo volumen y perforando domos..."):
             
-    else:
-        st.warning("⚠️ Selecciona una estación primero en la pestaña 'Selección de Clima'.")
+            # Obtener datos del domo seleccionado en el sidebar
+            datos_domo = df_domos[df_domos['Modelo'] == st.session_state.modelo_sel].iloc[0]
+            
+            # Llamamos a nuestra caja negra geométrica
+            vtk_path, num_domos_real, sfr_final = generar_nave_3d_vtk(
+                ancho=st.session_state.ancho,
+                largo=st.session_state.largo,
+                altura=st.session_state.alto,
+                sfr_objetivo=st.session_state.sfr_target,
+                domo_ancho_m=datos_domo['Ancho_m'],
+                domo_largo_m=datos_domo['Largo_m']
+            )
+            
+            # Guardar en memoria
+            if vtk_path:
+                st.session_state['vtk_path'] = vtk_path
+                st.session_state['num_domos_real'] = num_domos_real
+                st.session_state['sfr_final'] = sfr_final
+                st.session_state['datos_domo_actual'] = datos_domo
 
-with tab_reporte:
-    st.subheader("Generación de Reportes")
-    if getattr(st.session_state, 'calculo_completado', False):
-        st.success("El reporte está listo para ser generado.")
-        st.button("💾 Descargar PDF de Auditoría")
+    # Renderizar si existe el modelo en memoria
+    if 'vtk_path' in st.session_state and st.session_state['vtk_path']:
+        col_3d, col_metricas = st.columns([3, 1])
+        
+        with col_3d:
+            # Leer el archivo .vtkjs y mandarlo al visor
+            with open(st.session_state['vtk_path'], "rb") as f:
+                content = f.read()
+            st_vtkjs(content, key="visor_nave_3d")
+            
+        with col_metricas:
+            st.info("📊 Métricas de Instalación")
+            st.metric("Modelo Seleccionado", st.session_state['datos_domo_actual']['Modelo'])
+            st.metric("Domos Requeridos", f"{st.session_state['num_domos_real']} unds")
+            st.metric("SFR Real Alcanzado", f"{st.session_state['sfr_final']*100:.2f} %")
+            st.metric("Área de Techo", f"{st.session_state.ancho * st.session_state.largo:,.0f} m²")
+            st.caption("Gira el modelo 3D con el ratón. Usa Shift+Clic para moverlo.")
     else:
-        st.info("Completa la simulación en la pestaña 'Simulación Energética' primero.")
+        st.info("Ajusta las medidas de la nave en la barra lateral y haz clic en 'Generar Modelo 3D'.")
