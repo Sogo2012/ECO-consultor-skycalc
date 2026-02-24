@@ -3,12 +3,29 @@ import math
 import pathlib
 from ladybug_geometry.geometry3d.pointvector import Point3D
 from ladybug_geometry.geometry3d.face import Face3D
-from dragonfly.model import Model as DFModel, Building
-from dragonfly.story import Story, Room2D
+from dragonfly.model import Model as DFModel
+from dragonfly.building import Building
+from dragonfly.story import Story
+from dragonfly.room2d import Room2D
 from honeybee.aperture import Aperture
-from honeybee.boundarycondition import Outdoors # Clase con Mayúscula
+from honeybee.boundarycondition import Outdoors 
 from honeybee_vtk.model import Model as VTKModel
 
+# Importar Vector3D es CRÍTICO para mover el sol
+from ladybug_geometry.geometry3d.pointvector import Vector3D
+
+# Nuevas rutas para el Motor Solar
+from ladybug_display.visualization import VisualizationSet as LBDVS
+from honeybee_display.model import model_to_vis_set
+from ladybug_vtk.visualization_set import VisualizationSet as VTKVS
+import ladybug_display.extension.sunpath
+def _extraer_datos_vis_seguro(v_set):
+    """Extrae objetos de visualización probando todos los nombres posibles de 2024 a 2026."""
+    for attr in ['display_objects', 'objects', 'data', 'geometries']:
+        if hasattr(v_set, attr):
+            return getattr(v_set, attr)
+    try: return list(v_set) # Plan B: Intentar iterar directamente
+    except: return []
 def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_largo_m, lat=None, lon=None):
     try:
         # 1. Crear piso y volumen
@@ -60,46 +77,44 @@ def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_l
         else:
             print("✅ GEOMETRÍA PERFECTA: Modelo LBT 100% válido para simulación.")
 
-       # 6. EXPORTAR A VTK (BEM + SUNPATH)
+       # 6. EXPORTAR A VTK (Nave + Sunpath Blindado)
         vtk_file = pathlib.Path('data', 'nave_industrial.vtkjs')
         vtk_file.parent.mkdir(parents=True, exist_ok=True)
         
         try:
-            # Si tenemos coordenadas, intentamos inyectar el Sunpath
+            # Convertimos la nave a formato visual
+            vis_set_nave = model_to_vis_set(hb_model)
+            
             if lat is not None and lon is not None:
                 from ladybug.sunpath import Sunpath
-                from ladybug_display.visualization.sunpath import SunpathDisplay
-                from honeybee_display.model import model_to_vis_set
                 
-                # A) Crear el motor solar con las coordenadas
+                # A) Crear Sunpath y escalarlo manualmente (evita el TypeError)
                 sp = Sunpath(latitude=lat, longitude=lon)
+                sp_vis_set = sp.to_vis_set()
                 
-                # B) Centroide de la nave (la mitad del ancho y largo, altura 0)
-                centro = Point3D(ancho / 2, largo / 2, 0)
+                radio = (max(ancho, largo) * 1.5) / 100.0
+                sp_vis_set.scale(radio)
+                sp_vis_set.move(Vector3D(ancho/2, largo/2, altura/2))
                 
-                # C) Radio de la bóveda (70% de la diagonal geométrica para que "abrace" la nave)
-                radio = math.sqrt(ancho**2 + largo**2) * 0.7 
+                # B) Fusión usando la Sonda Detective
+                objs_nave = _extraer_datos_vis_seguro(vis_set_nave)
+                objs_sol = _extraer_datos_vis_seguro(sp_vis_set)
+                todo = list(objs_nave) + list(objs_sol)
                 
-                # D) Generar la geometría gráfica del Sol
-                sp_display = SunpathDisplay(sp, center=centro, radius=radio)
-                sp_vis_set = sp_display.to_vis_set()
-                
-                # E) Convertir la nave industrial a un set visual y fusionarlos
-                vis_set = model_to_vis_set(hb_model)
-                for geo in sp_vis_set.geometries:
-                    vis_set.add_geometry(geo)
+                # C) Crear set final (Plan A o B de Colab)
+                try:
+                    vis_set_final = LBDVS(todo, identifier='EscenaSolar')
+                except TypeError:
+                    vis_set_final = LBDVS(identifier='EscenaSolar', geometry=todo)
                     
-                # F) Exportar el conjunto unificado
-                vis_set.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
-                
+                vtk_final = VTKVS.from_visualization_set(vis_set_final)
+                vtk_final.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
             else:
-                # Exportación clásica (solo edificio) si no llegaron coordenadas
-                vtk_model = VTKModel(hb_model)
-                vtk_model.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
+                # Renderizado simple si no hay ubicación
+                VTKModel(hb_model).to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
                 
         except Exception as e:
-            print(f"Aviso Sunpath: No se pudo renderizar la bóveda solar ({e}). Usando renderizado clásico.")
-            # RED DE SEGURIDAD: Si la librería gráfica falla, exportamos el edificio normal.
+            print(f"Aviso Sunpath: Falló el motor avanzado ({e}). Usando renderizado de emergencia.")
             try:
                 vtk_model = VTKModel(hb_model)
                 vtk_model.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
