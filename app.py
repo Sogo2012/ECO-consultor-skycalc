@@ -1,19 +1,20 @@
-from streamlit_vtkjs import st_vtkjs
-from geometry_utils import generar_nave_3d_vtk
 import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
-from streamlit_folium import st_folium
+import os
 import plotly.graph_objects as go
 import plotly.express as px
-from weather_utils import obtener_estaciones_cercanas, descargar_y_extraer_epw, procesar_datos_clima
-import os
+from streamlit_folium import st_folium
+from streamlit_vtkjs import st_vtkjs
 
-# Configuración de página
+# Importaciones locales
+from geometry_utils import generar_nave_3d_vtk
+from weather_utils import obtener_estaciones_cercanas, descargar_y_extraer_epw, procesar_datos_clima
+
+# 1. CONFIGURACIÓN DE PÁGINA
 st.set_page_config(page_title="SkyCalc 2.0 - Eco Consultor", layout="wide", page_icon="⚡")
 
-# Estilos CSS personalizados
 st.markdown("""
     <style>
     .main { background-color: #f5f7f9; }
@@ -22,9 +23,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# ==========================================
-# BASE DE DATOS MAESTRA: SUNOPTICS
-# ==========================================
+# 2. CARGA DE CATÁLOGO SUNOPTICS
 @st.cache_data
 def cargar_catalogo():
     data = {
@@ -49,308 +48,108 @@ def cargar_catalogo():
 
 df_domos = cargar_catalogo()
 
-# Inicialización de estado
-if 'clima_data' not in st.session_state: st.session_state.clima_data = None
-if 'estacion_seleccionada' not in st.session_state: st.session_state.estacion_seleccionada = None
-if 'df_cercanas' not in st.session_state: st.session_state.df_cercanas = None
+# 3. INICIALIZACIÓN DE ESTADO
+for key in ['clima_data', 'estacion_seleccionada', 'df_cercanas', 'vtk_path']:
+    if key not in st.session_state: st.session_state[key] = None
+
 if 'lat' not in st.session_state: st.session_state.lat = 20.5888
 if 'lon' not in st.session_state: st.session_state.lon = -100.3899
 
 def buscar_estaciones():
     with st.spinner("Buscando estaciones cercanas..."):
-        df_cercanas = obtener_estaciones_cercanas(st.session_state.lat, st.session_state.lon)
-        st.session_state.df_cercanas = df_cercanas
-        if df_cercanas is None or df_cercanas.empty:
-            st.error("No se encontraron estaciones para esta ubicación.")
-        else:
-            st.success(f"Encontradas {len(df_cercanas)} estaciones.")
+        df = obtener_estaciones_cercanas(st.session_state.lat, st.session_state.lon)
+        st.session_state.df_cercanas = df
 
-# ==========================================
-# SIDEBAR - CONFIGURACIÓN DEL PROYECTO
-# ==========================================
+# 4. SIDEBAR - CONFIGURACIÓN
 with st.sidebar:
     st.markdown("## 🍃 Eco Consultor")
     st.title("SkyCalc 2.0")
     
-    # Acordeón de Ubicación (Para ahorrar espacio)
-    with st.expander("📍 1. Ubicación y Clima", expanded=False):
-        search_name = st.text_input("Buscar por ciudad o país", placeholder="Ej: Madrid, España")
-        if st.button("🔍 Buscar por Nombre"):
-            if search_name:
-                from geopy.geocoders import Nominatim
-                try:
-                    geolocator = Nominatim(user_agent="skycalc_buscador_ui")
-                    loc = geolocator.geocode(search_name)
-                    if loc:
-                        st.session_state.lat = loc.latitude
-                        st.session_state.lon = loc.longitude
-                        buscar_estaciones()
-                    else:
-                        st.error("No se pudo localizar ese lugar.")
-                except:
-                    st.error("Error al conectar con el servicio de búsqueda.")
-        st.divider()
+    with st.expander("📍 1. Ubicación y Clima", expanded=True):
+        search_name = st.text_input("Ciudad o país", placeholder="Ej: Madrid, España")
+        if st.button("🔍 Buscar"):
+            from geopy.geocoders import Nominatim
+            try:
+                geolocator = Nominatim(user_agent="skycalc_explorer")
+                loc = geolocator.geocode(search_name)
+                if loc:
+                    st.session_state.lat, st.session_state.lon = loc.latitude, loc.longitude
+                    buscar_estaciones()
+            except: st.error("Error en búsqueda")
+        
         st.session_state.lat = st.number_input("Latitud", value=st.session_state.lat, format="%.4f")
         st.session_state.lon = st.number_input("Longitud", value=st.session_state.lon, format="%.4f")
-        if st.button("🚀 Buscar en Coordenadas"):
-            buscar_estaciones()
+        if st.button("🚀 Buscar en Coordenadas"): buscar_estaciones()
 
-    st.subheader("📐 2. Geometría de la Nave")
-    st.session_state.ancho = st.number_input("Ancho (m)", 10.0, 500.0, 50.0)
-    st.session_state.largo = st.number_input("Largo (m)", 10.0, 500.0, 100.0)
-    st.session_state.alto = st.number_input("Altura Libre (m)", 3.0, 30.0, 8.0)
+    st.subheader("📐 2. Geometría")
+    ancho_nave = st.number_input("Ancho (m)", 10.0, 500.0, 50.0)
+    largo_nave = st.number_input("Largo (m)", 10.0, 500.0, 100.0)
+    alto_nave = st.number_input("Altura (m)", 3.0, 30.0, 8.0)
     
-    st.subheader("☀️ 3. Especificación Sunoptics")
-    st.session_state.modelo_sel = st.selectbox("Modelo NFRC", df_domos['Modelo'])
-    st.session_state.sfr_target = st.slider("Objetivo SFR (%)", 1.0, 10.0, 4.0, 0.1) / 100.0
+    st.subheader("☀️ 3. Sunoptics")
+    modelo_sel = st.selectbox("Modelo NFRC", df_domos['Modelo'])
+    sfr_target = st.slider("Objetivo SFR (%)", 1.0, 10.0, 4.0, 0.1) / 100.0
 
-# Tabs principales (¡AQUÍ AGREGAMOS LA PESTAÑA 3D!)
-tab_config, tab_clima, tab_3d, tab_analitica, tab_reporte = st.tabs([
-    "🌍 Selección de Clima", "🌤️ Contexto Climático", "📐 Geometría 3D", "📊 Simulación Energética", "📄 Reporte Final"
+# 5. TABS PRINCIPALES
+tab_config, tab_clima, tab_3d, tab_analitica = st.tabs([
+    "🌍 Selección de Clima", "🌤️ Contexto Climático", "📐 Geometría 3D", "📊 Simulación Energética"
 ])
-# --- PESTAÑA 1: MAPA Y DESCARGA ---
+
+# --- PESTAÑA 1: CLIMA ---
 with tab_config:
     col1, col2 = st.columns([2, 1])
-    
     with col1:
-        st.subheader("🌍 Mapa Interactivo")
-        st.caption("Método 3: Haz clic en el mapa para buscar estaciones en ese punto.")
-
+        st.subheader("🌍 Mapa de Estaciones")
         m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=8)
-        folium.Marker([st.session_state.lat, st.session_state.lon], tooltip="Ubicación de Proyecto", icon=folium.Icon(color='red', icon='crosshairs')).add_to(m)
-
-        if st.session_state.df_cercanas is not None and not st.session_state.df_cercanas.empty:
-            for idx, st_row in st.session_state.df_cercanas.iterrows():
-                l_est = st_row.get('Lat') or st_row.get('lat')
-                ln_est = st_row.get('Lon') or st_row.get('lon')
-                if pd.notna(l_est) and pd.notna(ln_est):
-                    folium.Marker(
-                        [l_est, ln_est],
-                        tooltip=f"{st_row.get('name', 'Estación')} ({st_row.get('distancia_km', 0)} km)",
-                        icon=folium.Icon(color='blue', icon='cloud')
-                    ).add_to(m)
-
-        output = st_folium(m, width=700, height=500, use_container_width=True, key="mapa_estaciones")
-
-        if output and output.get("last_clicked"):
-            c_lat = output["last_clicked"]["lat"]
-            c_lon = output["last_clicked"]["lng"]
-            if round(c_lat, 4) != round(st.session_state.lat, 4) or round(c_lon, 4) != round(st.session_state.lon, 4):
-                st.session_state.lat = c_lat
-                st.session_state.lon = c_lon
-                buscar_estaciones()
-                st.rerun()
+        folium.Marker([st.session_state.lat, st.session_state.lon], icon=folium.Icon(color='red')).add_to(m)
+        
+        if st.session_state.df_cercanas is not None:
+            for _, row in st.session_state.df_cercanas.iterrows():
+                folium.Marker([row['Lat'], row['Lon']], tooltip=row['name'], icon=folium.Icon(color='blue')).add_to(m)
+        
+        out = st_folium(m, width=700, height=450, use_container_width=True)
+        if out and out.get("last_clicked"):
+            st.session_state.lat, st.session_state.lon = out["last_clicked"]["lat"], out["last_clicked"]["lng"]
+            buscar_estaciones()
+            st.rerun()
 
     with col2:
-        st.subheader("Estaciones Disponibles")
-        if st.session_state.clima_data:
-            st.success(f"✅ Clima Activo: **{st.session_state.estacion_seleccionada}**")
-
-        if st.session_state.df_cercanas is not None and not st.session_state.df_cercanas.empty:
-            st.write("Selecciona una estación para descargar el .epw:")
+        st.subheader("Estaciones")
+        if st.session_state.df_cercanas is not None:
             for idx, row in st.session_state.df_cercanas.iterrows():
-                st_name = row.get('name') or row.get('Station') or f"Estación {idx}"
-                st_dist = row.get('distancia_km') or 0
-                
-                url = row.get('URL_ZIP') or row.get('epw') 
+                if st.button(f"📥 {row['name']} ({row['distancia_km']} km)", key=f"btn_{idx}"):
+                    path = descargar_y_extraer_epw(row['URL_ZIP'])
+                    if path:
+                        st.session_state.clima_data = procesar_datos_clima(path)
+                        st.session_state.estacion_seleccionada = row['name']
+                        os.remove(path)
+                        st.rerun()
 
-                with st.container():
-                    st.markdown(f"**{st_name}**")
-                    st.caption(f"📏 Distancia: **{st_dist} km**")
-                    if st.button(f"📥 Descargar Datos", key=f"btn_st_{idx}", use_container_width=True):
-                        if url:
-                            with st.spinner(f"Descargando e inyectando datos..."):
-                                path = descargar_y_extraer_epw(url)
-                                if path:
-                                    try:
-                                        data = procesar_datos_clima(path)
-                                        if data:
-                                            st.session_state.clima_data = data
-                                            st.session_state.estacion_seleccionada = st_name
-                                            st.rerun()
-                                        else:
-                                            st.error("Error al procesar el archivo EPW con Ladybug.")
-                                    finally:
-                                        if os.path.exists(path):
-                                            os.remove(path)
-                                else:
-                                    st.error("Error de descarga. El archivo no está disponible.")
-
-# --- PESTAÑA 2: GRÁFICOS BIOCLIMÁTICOS ---
-with tab_clima:
-    st.subheader("Análisis Bioclimático del Sitio")
-    
-    if st.session_state.clima_data and 'vel_viento' in st.session_state.clima_data:
-        clima = st.session_state.clima_data
-        md = clima.get('metadata', {})
-        
-        cols_hvac = st.columns(4)
-        cols_hvac[0].metric("Latitud", f"{md.get('lat', st.session_state.lat)}°")
-        cols_hvac[1].metric("Elevación", f"{md.get('elevacion', 0)} m")
-        cols_hvac[2].metric("Humedad Relativa Media", f"{round(sum(clima.get('hum_relativa', [0]))/8760, 1)} %")
-        cols_hvac[3].metric("Velocidad Viento Media", f"{round(sum(clima.get('vel_viento', [0]))/8760, 1)} m/s")
-        
-        st.divider()
-        col_graf_1, col_graf_2 = st.columns(2)
-        
-        with col_graf_1:
-            st.markdown("### 🌬️ Rosa de los Vientos Anual")
-            df_viento = pd.DataFrame({'dir': clima.get('dir_viento', []), 'vel': clima.get('vel_viento', [])})
-            if not df_viento.empty:
-                df_viento = df_viento[df_viento['vel'] > 0.5] 
-                
-                bins_dir = np.arange(-11.25, 372.0, 22.5) 
-                labels_dir = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW','N2']
-                df_viento['Dir_Cat'] = pd.cut(df_viento['dir'], bins=bins_dir, labels=labels_dir, right=False)
-                df_viento['Dir_Cat'] = df_viento['Dir_Cat'].replace('N2', 'N')
-                
-                bins_vel = [0, 2, 4, 6, 8, 20]
-                labels_vel = ['0-2 m/s', '2-4 m/s', '4-6 m/s', '6-8 m/s', '>8 m/s']
-                df_viento['Vel_Cat'] = pd.cut(df_viento['vel'], bins=bins_vel, labels=labels_vel)
-                
-                df_rose = df_viento.groupby(['Dir_Cat', 'Vel_Cat']).size().reset_index(name='Frecuencia')
-                
-                fig_rose = px.bar_polar(df_rose, r="Frecuencia", theta="Dir_Cat", color="Vel_Cat",
-                                        color_discrete_sequence=px.colors.sequential.Plasma_r,
-                                        template="plotly_white")
-                fig_rose.update_layout(margin=dict(t=20, b=20, l=20, r=20))
-                st.plotly_chart(fig_rose, use_container_width=True)
-
-        with col_graf_2:
-            st.markdown("### ☀️ Balance de Irradiación")
-            st.caption("Justificación técnica para domos prismáticos de alta difusión.")
-            
-            suma_directa = sum(clima.get('rad_directa', [0]))
-            suma_difusa = sum(clima.get('rad_dif', [0])) # Asegurado para coincidir con la gaveta correcta
-            
-            fig_pie = go.Figure(data=[go.Pie(labels=['Radiación Directa (Luz Dura)', 'Radiación Difusa (Luz Suave)'],
-                                             values=[suma_directa, suma_difusa], hole=.4,
-                                             marker_colors=['#f39c12', '#bdc3c7'])])
-            fig_pie.update_layout(margin=dict(t=20, b=20, l=20, r=20), template="plotly_white")
-            st.plotly_chart(fig_pie, use_container_width=True)
-            
-        st.divider()
-        
-        # --- EL NUEVO MAPA DE CALOR ESTILO POLLINATION ---
-        st.markdown("### 🌡️ Mapa de Calor Anual (Temperatura de Bulbo Seco)")
-        st.caption("Visualización de las 8,760 horas del año. Identifica los picos críticos de calor (rojo) y frío (azul) para el diseño del HVAC.")
-        
-        temp_array = np.array(clima.get('temp_seca', np.zeros(8760)))
-        
-        # Validación de seguridad: Asegurarnos de que el EPW tenga exactamente 8760 horas
-        if len(temp_array) == 8760:
-            # Transformar el array 1D en una matriz 2D (24h x 365d)
-            temp_matriz = temp_array.reshape(365, 24).T 
-            
-            fig_calor = go.Figure(data=go.Heatmap(
-                z=temp_matriz,
-                x=list(range(1, 366)),
-                y=list(range(0, 24)),
-                colorscale='RdYlBu_r', # Escala estándar BEM: Rojo-Amarillo-Azul invertida
-                colorbar=dict(title="Temp (°C)"),
-                hovertemplate="Día: %{x}<br>Hora: %{y}:00<br>Temp: %{z:.1f} °C<extra></extra>"
-            ))
-            
-            fig_calor.update_layout(
-                xaxis_title="Días del Año (Enero - Diciembre)",
-                yaxis_title="Hora del Día (00:00 - 23:00)",
-                yaxis=dict(tickmode='linear', tick0=0, dtick=4), # Marcas de hora legibles
-                margin=dict(t=10, b=30, l=40, r=20),
-                height=400,
-                template="plotly_white"
-            )
-            st.plotly_chart(fig_calor, use_container_width=True)
-        else:
-            st.warning("⚠️ El archivo climático tiene un formato inusual (no son 8760 horas), no se puede generar el mapa de calor.")
-            
-        st.divider()
-        st.markdown("### ☁️ Termodinámica y Nubosidad (Análisis BEM)")
-        
-        # 1. Cálculo rápido de Grados Día (Base 18.3°C / 65°F estándar ASHRAE)
-        temp_diaria = np.array([sum(temp_array[i:i+24])/24 for i in range(0, 8760, 24)]) if len(temp_array) == 8760 else np.zeros(365)
-        cdd_anual = sum([t - 18.3 for t in temp_diaria if t > 18.3])
-        hdd_anual = sum([18.3 - t for t in temp_diaria if t < 18.3])
-
-        col_t1, col_t2 = st.columns(2)
-        col_t1.metric("Grados Día Refrigeración (CDD)", f"{int(cdd_anual)}", "Demanda de Aire Acondicionado (Frío)", delta_color="inverse")
-        col_t2.metric("Grados Día Calefacción (HDD)", f"{int(hdd_anual)}", "Demanda de Calefacción (Calor)")
-
-        # 2. Gráfico de Estacionalidad de Nubosidad
-        st.markdown("#### ☁️ Perfil de Nubosidad Mensual")
-        st.caption("Porcentaje promedio de cielo cubierto. Los meses grises son donde la tecnología prismática de **Sunoptics®** captura luz en ángulos bajos, superando ampliamente al vidrio o policarbonato liso.")
-        
-        nubes_array = clima.get('nubes', np.zeros(8760))
-        if len(nubes_array) == 8760:
-            # Pandas agrupa mágicamente las 8760 horas en 12 meses
-            fechas = pd.date_range(start="2023-01-01", periods=8760, freq="h")
-            df_nubes = pd.DataFrame({'Fecha': fechas, 'Nubosidad': np.array(nubes_array) * 10}) # Convertimos de 0-10 a 0-100%
-            df_nubes['Mes'] = df_nubes['Fecha'].dt.month
-            nubes_mensual = df_nubes.groupby('Mes')['Nubosidad'].mean()
-            meses_labels = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-            
-            fig_nubes = go.Figure(data=[
-                go.Bar(x=meses_labels, y=nubes_mensual, 
-                       marker_color='#95a5a6', # Un elegante color gris nube
-                       text=[f"{val:.0f}%" for val in nubes_mensual], 
-                       textposition='auto')
-            ])
-            fig_nubes.update_layout(
-                yaxis_title="% Cielo Cubierto", 
-                yaxis=dict(range=[0, 100]), 
-                template="plotly_white", 
-                height=350, 
-                margin=dict(t=20, b=20, l=20, r=20)
-            )
-            st.plotly_chart(fig_nubes, use_container_width=True)
-        else:
-            st.warning("Datos de nubosidad no disponibles en este archivo.")
-        
-    else:
-        st.warning("⚠️ Descarga un archivo climático en la pestaña 'Selección de Clima' para ver el análisis bioclimático.")
-
-# --- NUEVA PESTAÑA: GEOMETRÍA 3D ---
+# --- PESTAÑA 3: GEOMETRÍA 3D ---
 with tab_3d:
-    st.subheader("Modelo 3D Paramétrico (Motor Honeybee)")
+    st.subheader("Modelo Paramétrico Sunoptics®")
     
-    if st.button("🏗️ Generar / Actualizar Modelo 3D", use_container_width=True):
-        with st.spinner("Construyendo volumen y perforando domos..."):
-            
-            # Obtener datos del domo seleccionado en el sidebar
-            datos_domo = df_domos[df_domos['Modelo'] == st.session_state.modelo_sel].iloc[0]
-            
-            # Llamamos a nuestra caja negra geométrica
-            vtk_path, num_domos_real, sfr_final = generar_nave_3d_vtk(
-                ancho=st.session_state.ancho,
-                largo=st.session_state.largo,
-                altura=st.session_state.alto,
-                sfr_objetivo=st.session_state.sfr_target,
-                domo_ancho_m=datos_domo['Ancho_m'],
-                domo_largo_m=datos_domo['Largo_m']
+    if st.button("🏗️ Generar Modelo 3D", use_container_width=True):
+        with st.spinner("Construyendo geometría Honeybee..."):
+            datos_domo = df_domos[df_domos['Modelo'] == modelo_sel].iloc[0]
+            vtk_path, num_domos, sfr_real = generar_nave_3d_vtk(
+                ancho_nave, largo_nave, alto_nave, sfr_target, 
+                datos_domo['Ancho_m'], datos_domo['Largo_m']
             )
-            
-            # Guardar en memoria
             if vtk_path:
-                st.session_state['vtk_path'] = vtk_path
-                st.session_state['num_domos_real'] = num_domos_real
-                st.session_state['sfr_final'] = sfr_final
-                st.session_state['datos_domo_actual'] = datos_domo
+                st.session_state.vtk_path = vtk_path
+                st.session_state.num_domos_real = num_domos
+                st.session_state.sfr_final = sfr_real
+                st.session_state.datos_domo_actual = datos_domo
 
-    # Renderizar si existe el modelo en memoria
-    if 'vtk_path' in st.session_state and st.session_state['vtk_path']:
-        col_3d, col_metricas = st.columns([3, 1])
-        
-        with col_3d:
-            # Leer el archivo .vtkjs y mandarlo al visor
-            with open(st.session_state['vtk_path'], "rb") as f:
-                content = f.read()
-            st_vtkjs(content, key="visor_nave_3d")
-            
-        with col_metricas:
-            st.info("📊 Métricas de Instalación")
-            st.metric("Modelo Seleccionado", st.session_state['datos_domo_actual']['Modelo'])
-            st.metric("Domos Requeridos", f"{st.session_state['num_domos_real']} unds")
-            st.metric("SFR Real Alcanzado", f"{st.session_state['sfr_final']*100:.2f} %")
-            st.metric("Área de Techo", f"{st.session_state.ancho * st.session_state.largo:,.0f} m²")
-            st.caption("Gira el modelo 3D con el ratón. Usa Shift+Clic para moverlo.")
+    if st.session_state.vtk_path and os.path.exists(st.session_state.vtk_path):
+        c3d, cmet = st.columns([3, 1])
+        with c3d:
+            with open(st.session_state.vtk_path, "rb") as f:
+                st_vtkjs(f.read(), key="visor_nave")
+        with cmet:
+            st.metric("Domos", f"{st.session_state.num_domos_real} uds")
+            st.metric("SFR Real", f"{st.session_state.sfr_final*100:.2f} %")
+            st.download_button("💾 Descargar .vtkjs", data=open(st.session_state.vtk_path, "rb"), file_name="nave.vtkjs")
     else:
-        st.info("Ajusta las medidas de la nave en la barra lateral y haz clic en 'Generar Modelo 3D'.")
+        st.info("Configura la nave y presiona 'Generar Modelo 3D'.")
