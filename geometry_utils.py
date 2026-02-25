@@ -31,6 +31,11 @@ def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_l
         # 1. Crear piso y volumen
         puntos_piso = [Point3D(0, 0, 0), Point3D(ancho, 0, 0), Point3D(ancho, largo, 0), Point3D(0, largo, 0)]
         room_df = Room2D('Nave_Principal', Face3D(puntos_piso), floor_to_ceiling_height=altura)
+        
+        # INYECCIÓN DE ESTÉTICA "WOW" (Color Blanco Brillante)
+        from ladybug.color import Color
+        blanco_brillante = Color(255, 255, 255) # RGB puro
+        room_df.display_color = blanco_brillante
         story = Story('Nivel_0', room_2ds=[room_df])
         building = Building('Planta_Industrial', unique_stories=[story])
         
@@ -108,7 +113,7 @@ def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_l
                     vis_set_final = LBDVS(identifier='EscenaSolar', geometry=todo)
                     
                 vtk_final = VTKVS.from_visualization_set(vis_set_final)
-                vtk_final.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
+                vtk_final.to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem, hide_ui=True)
             else:
                 # Renderizado simple si no hay ubicación
                 VTKModel(hb_model).to_vtkjs(folder=str(vtk_file.parent), name=vtk_file.stem)
