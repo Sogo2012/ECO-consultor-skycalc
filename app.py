@@ -17,9 +17,17 @@ st.set_page_config(page_title="SkyCalc 2.0 - Eco Consultor", layout="wide", page
 
 st.markdown("""
     <style>
+    /* Estilos Generales */
     .main { background-color: #f5f7f9; }
     .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
     .stMetric { background-color: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    
+    /* MARCA BLANCA: Ocultar logos y banners del visor 3D */
+    .pollination-logo, .ladybug-logo { display: none !important; }
+    div[title="Powered by Pollination"] { display: none !important; }
+    div[title="Ladybug Tools"] { display: none !important; }
+    a[href*="pollination.cloud"] { display: none !important; }
+    a[href*="ladybug.tools"] { display: none !important; }
     </style>
     """, unsafe_allow_html=True)
 
