@@ -352,7 +352,7 @@ with tab_3d:
         st.divider()
 
         # 2. Toggle de Iluminación y Sunpath
-        mostrar_sol = st.toggle("☀️ Mostrar Bóveda Solar", value=True)
+        mostrar_sol = st.toggle("☀️ Mostrar Bóveda Solar", value=False)
             
         # Elegir el archivo correcto según el interruptor
         ruta_base = st.session_state.vtk_path
