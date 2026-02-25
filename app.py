@@ -329,18 +329,22 @@ with tab_3d:
                 st.session_state.datos_domo_actual = datos_domo
 
     if st.session_state.vtk_path and os.path.exists(st.session_state.vtk_path):
-        c3d, cmet = st.columns([3, 1])
-        with c3d:
-            with open(st.session_state.vtk_path, "rb") as f:
-                # El archivo se lee en binario
-                vtk_data = f.read()
-            # Se le inyecta directamente al componente de Streamlit con su content=
-            st_vtkjs(content=vtk_data, key="visor_nave")
-        with cmet:
-            st.metric("Domos", f"{st.session_state.num_domos_real} uds")
-            st.metric("SFR Real", f"{st.session_state.sfr_final*100:.2f} %")
-            # El botón de descarga fue eliminado intencionalmente (Estrategia Lead Magnet)
-            st.info("💡 El modelo y el análisis detallado se incluirán en su Reporte Final.")
+        # 1. Visor 3D a pantalla completa (Adiós a las columnas estrechas)
+        with open(st.session_state.vtk_path, "rb") as f:
+            vtk_data = f.read()
+        st_vtkjs(content=vtk_data, key="visor_nave")
+        
+        st.divider()
+        
+        # 2. Métricas y KPIs reubicados en la parte inferior para no robar espacio
+        cmet1, cmet2, cmet3 = st.columns(3)
+        with cmet1:
+            st.metric("Domos Generados", f"{st.session_state.num_domos_real} uds", "Distribución Optimizada")
+        with cmet2:
+            st.metric("SFR Real (Área de Luz)", f"{st.session_state.sfr_final*100:.2f} %", "Cumple Estándar")
+        with cmet3:
+            st.info("💡 El modelo 3D y el análisis de iluminación detallado se incluirán en su Reporte Final en PDF.")
+            
     else:
         st.info("Configura la nave y presiona 'Generar Modelo 3D'.")
 
