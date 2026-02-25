@@ -85,6 +85,10 @@ def generar_nave_3d_vtk(ancho, largo, altura, sfr_objetivo, domo_ancho_m, domo_l
             # Convertimos la nave a formato visual
             vis_set_nave = model_to_vis_set(hb_model)
             
+            # NUEVO: Guardamos una versión "Limpia" (Solo Nave) para el Toggle
+            vtk_solo = VTKVS.from_visualization_set(vis_set_nave)
+            vtk_solo.to_vtkjs(folder=str(vtk_file.parent), name=f"{vtk_file.stem}_solo")
+            
             if lat is not None and lon is not None:
                 from ladybug.sunpath import Sunpath
                 
