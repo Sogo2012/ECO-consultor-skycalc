@@ -329,21 +329,22 @@ with tab_3d:
                 st.session_state.datos_domo_actual = datos_domo
 
     if st.session_state.vtk_path and os.path.exists(st.session_state.vtk_path):
-        # 1. Visor 3D a pantalla completa (Adiós a las columnas estrechas)
-        with open(st.session_state.vtk_path, "rb") as f:
-            vtk_data = f.read()
-        st_vtkjs(content=vtk_data, key="visor_nave")
         
-        st.divider()
-        
-        # 2. Métricas y KPIs reubicados en la parte inferior para no robar espacio
-        cmet1, cmet2, cmet3 = st.columns(3)
+        # 1. Dashboard Superior: KPIs y Normativa ASHRAE a primera vista
+        cmet1, cmet2, cmet3 = st.columns([1, 1, 2])
         with cmet1:
             st.metric("Domos Generados", f"{st.session_state.num_domos_real} uds", "Distribución Optimizada")
         with cmet2:
-            st.metric("SFR Real (Área de Luz)", f"{st.session_state.sfr_final*100:.2f} %", "Cumple Estándar")
+            st.metric("SFR Real (Área de Luz)", f"{st.session_state.sfr_final*100:.2f} %", "Cálculo Geométrico")
         with cmet3:
-            st.info("💡 El modelo 3D y el análisis de iluminación detallado se incluirán en su Reporte Final en PDF.")
+            st.info("📘 **Estándar ASHRAE 90.1:** Se recomienda una fenestración en techo (SFR) no mayor al **3%** del área total, permitiendo hasta un **5%** si se instalan sensores de luz natural (Daylighting Controls).")
+            
+        st.divider()
+
+        # 2. Visor 3D a pantalla completa (debajo de los datos)
+        with open(st.session_state.vtk_path, "rb") as f:
+            vtk_data = f.read()
+        st_vtkjs(content=vtk_data, key="visor_nave")
             
     else:
         st.info("Configura la nave y presiona 'Generar Modelo 3D'.")
