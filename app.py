@@ -330,21 +330,43 @@ with tab_3d:
 
     if st.session_state.vtk_path and os.path.exists(st.session_state.vtk_path):
         
-        # 1. Dashboard Superior: KPIs y Normativa ASHRAE a primera vista
+        # --- LÓGICA TÉCNICA ASHRAE 90.1 ---
+        sfr_pct = st.session_state.sfr_final * 100
+        if sfr_pct <= 3.0:
+            alerta_sfr = "🟢 **Cumple límite base (≤3%)**"
+        elif sfr_pct <= 5.0:
+            alerta_sfr = "🟠 **Requiere sensores de luz (≤5%)**"
+        else:
+            alerta_sfr = "🔴 **Excede límite ASHRAE (>5%)**"
+            
+        # 1. Dashboard Superior: KPIs y Normativa a primera vista
         cmet1, cmet2, cmet3 = st.columns([1, 1, 2])
         with cmet1:
-            st.metric("Domos Generados", f"{st.session_state.num_domos_real} uds", "Distribución Optimizada")
+            st.metric("Domos Generados", f"{st.session_state.num_domos_real} uds")
         with cmet2:
-            st.metric("SFR Real (Área de Luz)", f"{st.session_state.sfr_final*100:.2f} %", "Cálculo Geométrico")
+            st.metric("SFR Real", f"{sfr_pct:.2f} %")
+            st.markdown(alerta_sfr)
         with cmet3:
-            st.info("📘 **Estándar ASHRAE 90.1:** Se recomienda una fenestración en techo (SFR) no mayor al **3%** del área total, permitiendo hasta un **5%** si se instalan sensores de luz natural (Daylighting Controls).")
+            st.info("📘 **ASHRAE 90.1:** Se recomienda una fenestración en techo (SFR) no mayor al **3%** del área total, permitiendo hasta un **5%** si se instalan controles automáticos de iluminación (Daylighting Controls).")
             
         st.divider()
 
-        # 2. Visor 3D a pantalla completa (debajo de los datos)
-        with open(st.session_state.vtk_path, "rb") as f:
+        # 2. Toggle de Iluminación y Sunpath
+        mostrar_sol = st.toggle("☀️ Mostrar Bóveda Solar", value=True)
+            
+        # Elegir el archivo correcto según el interruptor
+        ruta_base = st.session_state.vtk_path
+        ruta_cargar = ruta_base if mostrar_sol else ruta_base.replace('.vtkjs', '_solo.vtkjs')
+        
+        if not os.path.exists(ruta_cargar):
+            ruta_cargar = ruta_base # Respaldo de seguridad
+
+        # 3. Visor 3D a pantalla completa
+        with open(ruta_cargar, "rb") as f:
             vtk_data = f.read()
-        st_vtkjs(content=vtk_data, key="visor_nave")
+            
+        # El 'key' dinámico fuerza a Streamlit a recargar el modelo cuando tocas el interruptor
+        st_vtkjs(content=vtk_data, key=f"visor_nave_{mostrar_sol}")
             
     else:
         st.info("Configura la nave y presiona 'Generar Modelo 3D'.")
